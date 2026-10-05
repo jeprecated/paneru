@@ -2531,24 +2531,27 @@ dont_focus = true
         matched("Save", "com.other", Some("AXWindow"), Some("AXDialog")),
         vec!["dialogs"]
     );
-    assert!(
+    assert_eq!(
         matched(
             "Main",
             "com.other",
             Some("AXWindow"),
             Some("AXStandardWindow")
-        )
-        .is_empty()
+        ),
+        [] as [&str; 0]
     );
     // A rule's subrole never matches a window that reports none.
-    assert!(matched("Save", "com.other", Some("AXWindow"), None).is_empty());
+    assert_eq!(
+        matched("Save", "com.other", Some("AXWindow"), None),
+        [] as [&str; 0]
+    );
 
     // A role-only rule: the role must match.
     assert_eq!(
         matched("Sheet", "com.other", Some("AXSheet"), None),
         vec!["sheets"]
     );
-    assert!(matched("Sheet", "com.other", None, None).is_empty());
+    assert_eq!(matched("Sheet", "com.other", None, None), [] as [&str; 0]);
 
     // Role and subrole together: both must match, alongside bundle_id.
     assert_eq!(
