@@ -36,6 +36,10 @@ pub struct GestureOptions {
     /// Vertical gestures switch one workspace per gesture. Default: false.
     pub window_step: Option<bool>,
 
+    /// Mean finger travel as a fraction of the trackpad dimension before a
+    /// discrete gesture fires. Independent of scrolling sensitivity when set.
+    pub step_threshold: Option<f64>,
+
     /// The number of fingers required for swipe gestures to move windows.
     pub fingers_count: Option<usize>,
 

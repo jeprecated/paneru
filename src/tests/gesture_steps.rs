@@ -157,3 +157,82 @@ fn gesture_steps_respects_disabled_vertical_gestures() {
             vertical_swipe(-1.0),
         ]);
 }
+
+#[test]
+#[allow(clippy::cast_precision_loss)] // Counts below are exactly 3 and 4.
+fn gesture_steps_small_threshold_uses_average_finger_travel_on_both_axes() {
+    for fingers in [3, 4] {
+        let config: Config = format!(
+            "[options]\ncreate_virtual_workspace_automatically = true\n\
+             [swipe.gesture]\nfingers_count = {fingers}\nwindow_step = true\n\
+             step_threshold = 0.02\n"
+        )
+        .as_str()
+        .try_into()
+        .unwrap();
+        TestHarness::new()
+            .with_config(config)
+            .with_windows(2)
+            .on_iteration(3, |world, _| {
+                assert_focused!(world, 0);
+                assert_no_scrolling(world);
+            })
+            .on_iteration(4, |world, _| assert_focused!(world, 1))
+            .on_iteration(5, |world, _| assert_focused!(world, 1))
+            .on_iteration(8, |world, _| assert_eq!(workspace(world), 0))
+            .on_iteration(9, |world, _| assert_eq!(workspace(world), 1))
+            .run(vec![
+                Event::MenuOpened { window_id: 0 },
+                Event::Command {
+                    command: Command::Window(Operation::Focus(Direction::First)),
+                },
+                Event::TouchpadDown,
+                Event::Swipe {
+                    delta: 0.01 * fingers as f64,
+                    fingers,
+                },
+                Event::Swipe {
+                    delta: 0.011 * fingers as f64,
+                    fingers,
+                },
+                Event::Swipe {
+                    delta: 0.5 * fingers as f64,
+                    fingers,
+                },
+                Event::TouchpadUp,
+                Event::TouchpadDown,
+                Event::VerticalSwipe {
+                    delta: -0.01 * fingers as f64,
+                    fingers,
+                },
+                Event::VerticalSwipe {
+                    delta: -0.011 * fingers as f64,
+                    fingers,
+                },
+            ]);
+    }
+}
+
+#[test]
+fn gesture_step_threshold_clamps_invalid_values_and_is_independent_of_sensitivity() {
+    for (threshold, expected) in [
+        ("0.02", 0.02),
+        ("0.0", 0.001),
+        ("-1.0", 0.001),
+        ("2.0", 1.0),
+    ] {
+        for sensitivity in [0.1, 2.0] {
+            let config: Config = format!(
+                "[swipe]\nsensitivity = {sensitivity}\n[swipe.gesture]\nstep_threshold = {threshold}\n"
+            ).as_str().try_into().unwrap();
+            assert!((config.swipe_gesture_step_threshold() - expected).abs() < f64::EPSILON);
+        }
+    }
+    for threshold in ["nan", "inf", "-inf"] {
+        let config: Config = format!("[swipe.gesture]\nstep_threshold = {threshold}\n")
+            .as_str()
+            .try_into()
+            .unwrap();
+        assert!((config.swipe_gesture_step_threshold() - 0.15 / 0.35 / 3.0).abs() < f64::EPSILON);
+    }
+}

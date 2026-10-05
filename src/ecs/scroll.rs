@@ -431,6 +431,8 @@ struct GestureStepState {
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
+// Physical finger counts are far below f64's exact integer limit.
+#[allow(clippy::cast_precision_loss)]
 fn step_swipe_gesture(
     mut messages: MessageReader<InputEvent>,
     active_display: ActiveDisplay,
@@ -444,16 +446,18 @@ fn step_swipe_gesture(
         return;
     }
 
-    let threshold = 0.15 / config.swipe_sensitivity();
+    let threshold = config.swipe_gesture_step_threshold();
     for InputEvent(event) in messages.read() {
         match event {
             Event::TouchpadDown | Event::TouchpadUp => {
                 *state = GestureStepState::default();
             }
             Event::Swipe { delta, fingers }
-                if !state.fired && config.swipe_gesture_fingers() == Some(*fingers) =>
+                if !state.fired
+                    && *fingers >= 3
+                    && config.swipe_gesture_fingers() == Some(*fingers) =>
             {
-                state.horizontal += delta;
+                state.horizontal += delta / *fingers as f64;
                 if state.horizontal.abs() >= threshold {
                     // Positive deltas mean fingers move left. Natural scrolling
                     // reveals the column to the right; reversed does the opposite.
@@ -474,10 +478,11 @@ fn step_swipe_gesture(
             }
             Event::VerticalSwipe { delta, fingers }
                 if !state.fired
+                    && *fingers >= 3
                     && config.swipe_vertical()
                     && config.swipe_gesture_fingers() == Some(*fingers) =>
             {
-                state.vertical += delta;
+                state.vertical += delta / *fingers as f64;
                 if state.vertical.abs() >= threshold {
                     switch_virtual_workspace(state.vertical, &config, &mut commands);
                     state.fired = true;
