@@ -32,6 +32,10 @@ pub struct SwipeOptions {
 #[derive(Deserialize, Clone, Debug, Default)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct GestureOptions {
+    /// Focus one adjacent column per horizontal gesture instead of scrolling.
+    /// Vertical gestures switch one workspace per gesture. Default: false.
+    pub window_step: Option<bool>,
+
     /// The number of fingers required for swipe gestures to move windows.
     pub fingers_count: Option<usize>,
 

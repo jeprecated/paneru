@@ -1,5 +1,6 @@
 mod display;
 mod focus_or_virtual;
+mod gesture_steps;
 mod harness;
 mod interaction;
 mod mocks;

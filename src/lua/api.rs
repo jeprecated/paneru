@@ -731,11 +731,13 @@ fn config_to_lua_table(lua: &Lua, config: &Config) -> mlua::Result<Table> {
     swipe.set("continuous", config.continuous_swipe())?;
 
     let GestureOptions {
+        window_step: _,
         fingers_count: _,
         direction: _,
         vertical: _,
     } = GestureOptions::default();
     let gesture = lua.create_table()?;
+    gesture.set("window_step", config.swipe_gesture_window_step())?;
     gesture.set("fingers_count", config.swipe_gesture_fingers())?;
     let direction_str = match config.swipe_gesture_direction() {
         crate::config::swipe::SwipeGestureDirection::Natural => "Natural",

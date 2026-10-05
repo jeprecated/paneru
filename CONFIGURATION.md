@@ -71,10 +71,25 @@ Configure trackpad gestures and scroll-wheel window sliding.
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `fingers_count` | Integer | *None* | Number of fingers for the swipe gesture. Set to 3 or more to enable. |
+| `window_step` | Boolean | `false` | Focus the adjacent column once per horizontal swipe instead of scrolling the strip. Vertical swipes switch one workspace. Lift your fingers before the next action. |
 | `direction` | String | `"Natural"` | Direction of movement: `"Natural"` or `"Reversed"`. |
 | `vertical` | Boolean | `true` | Interpret the vertical gestures with `fingers_count` or ignore them. Enabling this allows using vertical swipe gestures to change virtual desktops. |
 
 When `fingers_count` is omitted or set below 3, Paneru does not intercept native macOS gestures. If macOS uses three-finger horizontal swipes for Spaces, prefer `[swipe.scroll]` with a modifier or configure a different finger count.
+
+For three-finger navigation without a modifier key:
+
+```toml
+[swipe.gesture]
+fingers_count = 3
+window_step = true
+vertical = true
+```
+
+With the default natural direction, swiping your fingers left focuses the column
+to the right, and swiping up switches to the workspace below. Set `direction =
+"Reversed"` to reverse both axes. Small movements below the gesture threshold do
+nothing; holding or continuing the same swipe does not repeat the action.
 
 ### `[swipe.scroll]`
 | Option | Type | Default | Description |

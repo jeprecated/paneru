@@ -521,6 +521,15 @@ impl Config {
             .or(config.options.swipe_gesture_fingers)
     }
 
+    pub fn swipe_gesture_window_step(&self) -> bool {
+        self.inner()
+            .swipe
+            .as_ref()
+            .and_then(|swipe| swipe.gesture.as_ref())
+            .and_then(|gesture| gesture.window_step)
+            .unwrap_or(false)
+    }
+
     pub fn swipe_vertical(&self) -> bool {
         let config = self.inner();
         config
