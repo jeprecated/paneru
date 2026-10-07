@@ -245,6 +245,7 @@ https://github.com/karinushka/paneru/blob/3790b01f8d65df5d9000142db7cf25f9270dcc
 | `display_focus_west` / `_east` / `_north` / `_south` | Focus the remembered window on the display in that physical direction, preserving each display's scrolling offset. |
 | `display_edges_overlap` / `_park` / `_native` / `_supplementary` | Select the display experiment without restarting. |
 | `display_supplementary` | Send the focused main-display window to the supplementary display, swapping its occupant into the original column slot. Focus stays on the main display when possible. |
+| `display_next` | Cycle screen focus, restoring the remembered window and preserving each screen's scrolling offset. With two screens this toggles between them. |
 
 **Example:**
 ```toml
@@ -252,6 +253,8 @@ https://github.com/karinushka/paneru/blob/3790b01f8d65df5d9000142db7cf25f9270dcc
 window_focus_west = "cmd - h"
 window_resize = ["alt - r", "ctrl - r"]
 reload = "cmd + ctrl + alt - r"
+display_next = "cmd - grave"
+display_supplementary = "cmd + shift - grave"
 display_focus_west = "cmd + ctrl + alt - leftarrow"
 display_focus_east = "cmd + ctrl + alt - rightarrow"
 ```

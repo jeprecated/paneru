@@ -119,28 +119,39 @@ fn focus_display(
     let Some(direction) = messages.read().find_map(|event| match event {
         Event::Command {
             command: Command::DisplayFocus(direction),
-        } => Some(direction),
+        } => Some(Some(direction)),
+        Event::Command {
+            command: Command::DisplayNext,
+        } => Some(None),
         _ => None,
     }) else {
         return;
     };
     let center = active.bounds().center();
-    let target = displays
-        .iter()
-        .filter(|(_, display)| display.id() != active.id())
-        .filter_map(|(entity, display)| {
-            let delta = display.bounds().center() - center;
-            let (along, across) = match direction {
-                Direction::West => (-delta.x, delta.y),
-                Direction::East => (delta.x, delta.y),
-                Direction::North => (-delta.y, delta.x),
-                Direction::South => (delta.y, delta.x),
-                _ => return None,
-            };
-            (along > 0).then_some((entity, display, i64::from(along) + i64::from(across).abs()))
-        })
-        .min_by_key(|(entity, _, distance)| (*distance, entity.to_bits()));
-    let Some((display_entity, display, _)) = target else {
+    let target = if let Some(direction) = direction {
+        displays
+            .iter()
+            .filter(|(_, display)| display.id() != active.id())
+            .filter_map(|(entity, display)| {
+                let delta = display.bounds().center() - center;
+                let (along, across) = match direction {
+                    Direction::West => (-delta.x, delta.y),
+                    Direction::East => (delta.x, delta.y),
+                    Direction::North => (-delta.y, delta.x),
+                    Direction::South => (delta.y, delta.x),
+                    _ => return None,
+                };
+                (along > 0).then_some((entity, display, i64::from(along) + i64::from(across).abs()))
+            })
+            .min_by_key(|(entity, _, distance)| (*distance, entity.to_bits()))
+            .map(|(entity, display, _)| (entity, display))
+    } else {
+        displays
+            .iter()
+            .filter(|(_, display)| display.id() != active.id())
+            .min_by_key(|(_, display)| (display.id() <= active.id(), display.id()))
+    };
+    let Some((display_entity, display)) = target else {
         return;
     };
     let Ok(space) = wm.active_display_space(display.id()) else {

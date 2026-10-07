@@ -50,6 +50,7 @@ pub fn parse_command(argv: &[&str]) -> Result<Command> {
         "restart" => Command::Restart,
         "reload" => Command::Reload,
         "display" => match (argv.get(1), argv.get(2)) {
+            (Some(&"next"), None) if argv.len() == 2 => Command::DisplayNext,
             (Some(&"supplementary"), None) if argv.len() == 2 => Command::DisplaySupplementary,
             (Some(&"edges"), Some(mode)) if argv.len() == 3 => {
                 Command::DisplayEdges(DisplayEdgeMode::parse(mode)?)
@@ -195,6 +196,7 @@ impl Command {
                 vec!["display".into(), "focus".into(), direction.token()]
             }
             Command::DisplaySupplementary => vec!["display".into(), "supplementary".into()],
+            Command::DisplayNext => vec!["display".into(), "next".into()],
             Command::PrintState => vec!["printstate".to_string()],
             Command::Lua(_) | Command::Layout(_) => return None,
         };
@@ -324,6 +326,7 @@ mod tests {
             Command::DisplayEdges(DisplayEdgeMode::Park),
             Command::DisplayEdges(DisplayEdgeMode::Supplementary),
             Command::DisplaySupplementary,
+            Command::DisplayNext,
             Command::DisplayFocus(Direction::West),
             Command::DisplayFocus(Direction::East),
             Command::DisplayFocus(Direction::North),

@@ -363,4 +363,6 @@ pub enum Command {
     DisplayFocus(Direction),
     /// Send the focused window to the supplementary display, swapping its occupant.
     DisplaySupplementary,
+    /// Cycle display focus by native display id, restoring remembered focus.
+    DisplayNext,
 }
