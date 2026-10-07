@@ -60,8 +60,8 @@ type MovableWindows<'w, 's> = Query<
         &'static Bounds,
         Option<&'static Unmanaged>,
         Has<RepositionMarker>,
-        Option<&'static super::display_edges::RecentWindowMove>,
-        Has<super::display_edges::DisplayConstrainedMarker>,
+        Option<&'static super::window_geometry::RecentWindowMove>,
+        Has<super::window_geometry::DisplayConstrainedMarker>,
     ),
     Without<LayoutStrip>,
 >;
@@ -1129,7 +1129,7 @@ pub(crate) fn commit_window_position(
         window.reposition(position.0);
         commands
             .entity(entity)
-            .insert(super::display_edges::RecentWindowMove {
+            .insert(super::window_geometry::RecentWindowMove {
                 origin: position.0,
                 until: time.elapsed() + Duration::from_millis(150),
             });

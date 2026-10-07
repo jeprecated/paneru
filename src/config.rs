@@ -479,10 +479,6 @@ impl Config {
         i32::from(self.options().sliver_width.unwrap_or(5)).max(1)
     }
 
-    pub fn display_edge_mode(&self) -> crate::types::commands::DisplayEdgeMode {
-        self.options().display_edge_mode.unwrap_or_default()
-    }
-
     pub fn edge_padding(&self) -> (i32, i32, i32, i32) {
         let config = self.inner();
         let o = &config.options;
@@ -1242,8 +1238,6 @@ pub struct MainOptions {
     /// Width of off-screen window slivers in pixels.
     /// Default: 5 pixels.
     pub sliver_width: Option<u16>,
-    /// Presentation at shared display edges: park (default), overlap, or native.
-    pub display_edge_mode: Option<crate::types::commands::DisplayEdgeMode>,
     /// Native display id to use as supplementary; defaults to the built-in screen.
     pub supplementary_display: Option<u32>,
     /// Legacy top-level padding (deprecated; use `[padding]`).

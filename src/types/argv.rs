@@ -5,7 +5,7 @@
 //! together here and are checked against each other by round-trip tests.
 
 use crate::types::commands::{
-    Command, Direction, DisplayEdgeMode, MouseMove, MoveFocus, Operation, ResizeDirection,
+    Command, Direction, MouseMove, MoveFocus, Operation, ResizeDirection,
     parse_virtual_workspace_number,
 };
 
@@ -52,9 +52,6 @@ pub fn parse_command(argv: &[&str]) -> Result<Command> {
         "display" => match (argv.get(1), argv.get(2)) {
             (Some(&"next"), None) if argv.len() == 2 => Command::DisplayNext,
             (Some(&"supplementary"), None) if argv.len() == 2 => Command::DisplaySupplementary,
-            (Some(&"edges"), Some(mode)) if argv.len() == 3 => {
-                Command::DisplayEdges(DisplayEdgeMode::parse(mode)?)
-            }
             (Some(&"focus"), Some(direction)) if argv.len() == 3 => {
                 let direction = Direction::parse(direction)?;
                 if !matches!(
@@ -189,9 +186,6 @@ impl Command {
             Command::Quit => vec!["quit".to_string()],
             Command::Restart => vec!["restart".to_string()],
             Command::Reload => vec!["reload".to_string()],
-            Command::DisplayEdges(mode) => {
-                ["display", "edges", mode.token()].map(String::from).into()
-            }
             Command::DisplayFocus(direction) => {
                 vec!["display".into(), "focus".into(), direction.token()]
             }
@@ -321,10 +315,6 @@ mod tests {
             Command::Reload,
             Command::PrintState,
             Command::Mouse(MouseMove::ToNextDisplay),
-            Command::DisplayEdges(DisplayEdgeMode::Native),
-            Command::DisplayEdges(DisplayEdgeMode::Overlap),
-            Command::DisplayEdges(DisplayEdgeMode::Park),
-            Command::DisplayEdges(DisplayEdgeMode::Supplementary),
             Command::DisplaySupplementary,
             Command::DisplayNext,
             Command::DisplayFocus(Direction::West),

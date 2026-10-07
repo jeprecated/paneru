@@ -26,7 +26,6 @@ use crate::ecs::params::ActiveDisplay;
 use crate::ecs::{Bounds, FocusedMarker, Unmanaged};
 use crate::events::{Event, EventSender};
 use crate::manager::request_ax_privilege;
-use crate::types::commands::DisplayEdgeMode;
 use crate::util::round_px;
 
 #[derive(Debug, Clone)]
@@ -101,18 +100,6 @@ define_class!(
             self.send_command(Command::Reload);
         }
 
-        #[unsafe(method(selectDisplayEdges:))]
-        fn select_display_edges(&self, item: &NSMenuItem) {
-            let mode = match item.tag() {
-                0 => DisplayEdgeMode::Overlap,
-                1 => DisplayEdgeMode::Park,
-                2 => DisplayEdgeMode::Native,
-                3 => DisplayEdgeMode::Supplementary,
-                _ => return,
-            };
-            self.send_command(Command::DisplayEdges(mode));
-        }
-
         #[unsafe(method(sendToSupplementary:))]
         fn send_to_supplementary(&self, _: &NSMenuItem) {
             self.send_command(Command::DisplaySupplementary);
@@ -146,7 +133,6 @@ pub struct MenuBarManager {
     manage_item: Option<Retained<NSMenuItem>>,
     copy_rule_item: Option<Retained<NSMenuItem>>,
     configured_widths: Vec<i32>,
-    edge_items: Vec<(DisplayEdgeMode, Retained<NSMenuItem>)>,
     current_content: Option<MenuBarContent>,
 }
 
@@ -194,7 +180,6 @@ impl MenuBarManager {
             manage_item: None,
             copy_rule_item: None,
             configured_widths: Vec::new(),
-            edge_items: Vec::new(),
             current_content: None,
         }
     }
@@ -236,21 +221,12 @@ impl MenuBarManager {
         config: &Config,
         has_focused_window: bool,
         focused_width_ratio: Option<f64>,
-        edge_mode: DisplayEdgeMode,
     ) {
         let preset_widths = config.preset_column_widths();
         let widths = normalized_width_percentages(&preset_widths);
         if self.configured_widths != widths {
             self.rebuild_menu(&widths);
         }
-        for (mode, item) in &self.edge_items {
-            item.setState(if *mode == edge_mode {
-                NSControlStateValueOn
-            } else {
-                NSControlStateValueOff
-            });
-        }
-
         let enablement = window_menu_enablement(has_focused_window, focused_width_ratio);
         for item in &self.managed_window_items {
             item.setEnabled(enablement.managed_actions);
@@ -286,7 +262,6 @@ impl MenuBarManager {
         self.managed_window_items.clear();
         self.manage_item = None;
         self.copy_rule_item = None;
-        self.edge_items.clear();
 
         let status = self.add_item(&format!("Paneru — {}", crate::VERSION_STRING), None);
         status.setEnabled(false);
@@ -310,27 +285,6 @@ impl MenuBarManager {
         self.menu.addItem(&NSMenuItem::separatorItem(self.mtm));
         self.copy_rule_item = Some(self.add_item("Copy Window Rule", Some(sel!(copyWindowRule:))));
 
-        self.menu.addItem(&NSMenuItem::separatorItem(self.mtm));
-        let edges = self.add_item("Display edges", None);
-        edges.setEnabled(false);
-        for (tag, mode, label) in [
-            (0, DisplayEdgeMode::Overlap, "Overlap within screen"),
-            (1, DisplayEdgeMode::Park, "Park at exposed edge"),
-            (
-                3,
-                DisplayEdgeMode::Supplementary,
-                "Laptop supplementary (one window)",
-            ),
-            (
-                2,
-                DisplayEdgeMode::Native,
-                "Native scrolling (allow overflow)",
-            ),
-        ] {
-            let item = self.add_item(label, Some(sel!(selectDisplayEdges:)));
-            item.setTag(tag);
-            self.edge_items.push((mode, item));
-        }
         self.menu.addItem(&NSMenuItem::separatorItem(self.mtm));
         self.add_item("Reload Windows and Displays", Some(sel!(reloadWindows:)));
         let supplementary = self.add_item(
@@ -691,7 +645,6 @@ pub fn update_menu_bar(
     workspaces: Query<&LayoutStrip>,
     focused: Query<(&Bounds, Has<Unmanaged>), With<FocusedMarker>>,
     config: Res<Config>,
-    edge_selection: Option<Res<crate::ecs::display_edges::DisplayEdges>>,
     menu_bar: Option<NonSendMut<MenuBarManager>>,
 ) {
     let Some(mut menu_bar) = menu_bar else {
@@ -718,7 +671,6 @@ pub fn update_menu_bar(
         &config,
         focused_window.is_some(),
         focused_width_ratio,
-        crate::ecs::display_edges::mode(&config, edge_selection.as_deref()),
     );
 }
 

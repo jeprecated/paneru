@@ -13,18 +13,17 @@ use stdext::function_name;
 use tracing::{Level, instrument, trace};
 
 use crate::config::Config;
-use crate::ecs::display_edges::{DisplayConstrainedMarker, DisplayEdges};
 use crate::ecs::params::Windows;
+use crate::ecs::window_geometry::DisplayConstrainedMarker;
 use crate::ecs::workspace::SnapStripMarker;
 use crate::ecs::{
-    ActiveWorkspaceMarker, Bounds, DockPosition, EnsureVisibleMarker, FocusedMarker, Initializing,
-    LayoutPosition, ManualStripOffset, Position, RepositionMarker, ReshuffleAroundMarker,
-    Scrolling, SpawnCommandsExt,
+    ActiveWorkspaceMarker, Bounds, DockPosition, EnsureVisibleMarker, Initializing, LayoutPosition,
+    ManualStripOffset, Position, RepositionMarker, ReshuffleAroundMarker, Scrolling,
+    SpawnCommandsExt,
 };
 use crate::errors::{Error, Result};
 use crate::manager::{Display, Origin, Size, Window};
 use crate::platform::WorkspaceId;
-use crate::types::commands::DisplayEdgeMode;
 use crate::util::round_px;
 
 /// The floor every window in a column is packed against. Heights that would
@@ -39,13 +38,8 @@ pub struct LayoutEventsPlugin;
 /// frame has left the display entirely to whichever display it landed on.
 pub(crate) const PARKED_STRIP_SLIVER: i32 = 10;
 
-/// The window has been parked away from a shared display edge. Restore it in
-/// one move: interpolating from that parking slot would cross other windows.
-#[derive(bevy::ecs::component::Component)]
-pub(crate) struct DisplayParkedMarker;
-
-/// Native windows cannot be clipped at a monitor boundary. If a frame spills
-/// onto a neighbor, park it along an exposed edge of its own display instead.
+/// Keep hidden virtual-row windows away from neighboring displays by parking
+/// them along an exposed edge of their own display.
 /// Keep a sliver on the owner so `WindowServer` retains its Space assignment.
 fn parking_origin(frame: IRect, viewport: IRect, neighbors: &[IRect]) -> Option<Origin> {
     let overlap = |rect: IRect| -> i64 {
@@ -82,32 +76,18 @@ fn parking_origin(frame: IRect, viewport: IRect, neighbors: &[IRect]) -> Option<
     .min_by_key(|origin| overlap(IRect::from_corners(*origin, *origin + size)))
 }
 
-fn constrained_origin(
-    frame: IRect,
-    viewport: IRect,
-    neighbors: &[IRect],
-    mode: DisplayEdgeMode,
-    park: bool,
-) -> Option<Origin> {
-    match mode {
-        DisplayEdgeMode::Native => None,
-        DisplayEdgeMode::Park => park
-            .then(|| parking_origin(frame, viewport, neighbors))
-            .flatten(),
-        DisplayEdgeMode::Overlap | DisplayEdgeMode::Supplementary => {
-            let spills = neighbors.iter().any(|neighbor| {
-                let intersection = frame.intersect(*neighbor);
-                intersection.width() > 0 && intersection.height() > 0
-            });
-            spills.then(|| {
-                if park && frame.min.y >= viewport.max.y - PARKED_STRIP_SLIVER {
-                    parking_origin(frame, viewport, neighbors).unwrap_or(frame.min)
-                } else {
-                    clamp_origin_to_viewport(frame.min, frame.size(), viewport)
-                }
-            })
+fn constrained_origin(frame: IRect, viewport: IRect, neighbors: &[IRect]) -> Option<Origin> {
+    let spills = neighbors.iter().any(|neighbor| {
+        let intersection = frame.intersect(*neighbor);
+        intersection.width() > 0 && intersection.height() > 0
+    });
+    spills.then(|| {
+        if frame.min.y >= viewport.max.y - PARKED_STRIP_SLIVER {
+            parking_origin(frame, viewport, neighbors).unwrap_or(frame.min)
+        } else {
+            clamp_origin_to_viewport(frame.min, frame.size(), viewport)
         }
-    }
+    })
 }
 
 /// A strip, its entity, origin, display, whether it's the active one, and the
@@ -1680,17 +1660,13 @@ pub(crate) fn position_layout_windows(
     positioned_windows: RepositionedWindows,
     workspaces: StripsForWindowPositioning,
     snap_guards: Query<&SnapStripMarker>,
-    parked_windows: Query<(), With<DisplayParkedMarker>>,
-    focused_windows: Query<(), With<FocusedMarker>>,
+    constrained_windows: Query<(), With<DisplayConstrainedMarker>>,
     animating_strips: Query<(), (With<LayoutStrip>, With<RepositionMarker>)>,
-    focus_history: Res<super::focus::FocusHistory>,
-    edge_selection: Option<Res<DisplayEdges>>,
     displays: DisplayViewports,
     config: Res<Config>,
     mut commands: Commands,
 ) {
     let offscreen_sliver_width = config.sliver_width();
-    let edge_mode = super::display_edges::mode(&config, edge_selection.as_deref());
     let (_, pad_right, _, pad_left) = config.edge_padding();
     let mut strip_contexts = EntityHashMap::default();
     for (strip_entity, layout_strip, Position(strip_position), swiping, child_of) in &workspaces {
@@ -1779,24 +1755,18 @@ pub(crate) fn position_layout_windows(
             .filter(|(other, _)| other.id() != display.id())
             .map(|(other, _)| other.bounds())
             .collect::<Vec<_>>();
-        // A focused oversized window may unavoidably cross a display edge.
-        // Keep it usable; only park background windows or hidden workspaces.
+        // Physical overflow stays inside its owning display while logical
+        // columns keep scrolling. Hidden virtual rows use exposed-edge slots.
         let owner = workspaces
             .iter()
             .find(|(_, strip, _, _, _)| strip.contains(entity));
-        let last_focused =
-            owner.and_then(|(_, strip, _, _, _)| focus_history.last_managed(strip.id()));
         let strip_animating =
             owner.is_some_and(|(entity, _, _, _, _)| animating_strips.contains(entity));
-        let park = (!focused_windows.contains(entity) && last_focused != Some(entity))
-            || frame.min.y >= park_row;
-        let safe_origin = constrained_origin(frame, viewport, &neighbors, edge_mode, park);
+        let safe_origin = constrained_origin(frame, viewport, &neighbors);
         if let Some(origin) = safe_origin {
             frame = IRect::from_corners(origin, origin + frame.size());
-            commands.entity(entity).insert(DisplayParkedMarker);
             commands.entity(entity).insert(DisplayConstrainedMarker);
-        } else if parked_windows.contains(entity) {
-            commands.entity(entity).remove::<DisplayParkedMarker>();
+        } else if constrained_windows.contains(entity) {
             commands.entity(entity).remove::<DisplayConstrainedMarker>();
         }
 
@@ -1834,8 +1804,6 @@ pub(crate) fn position_layout_windows(
                 // every window chased its moving target and made scrolling lag.
                 || strip_animating
                 || context.snap_settling
-                || edge_mode == DisplayEdgeMode::Park
-                    && (safe_origin.is_some() || parked_windows.contains(entity))
                 || offscreen_move && !config.virtual_workspace_animations()
             {
                 position.0 = frame.min;
@@ -1855,15 +1823,13 @@ mod tests {
     use bevy::prelude::*;
 
     #[test]
-    fn overlap_preserves_size_and_moves_continuously_at_shared_edge() {
+    fn scrolling_preserves_size_and_moves_continuously_at_shared_edge() {
         let viewport = IRect::new(0, 20, 1000, 800);
         let neighbor = IRect::new(-1000, 0, 0, 800);
         let size = Size::new(400, 700);
         for x in -350..=50 {
             let frame = IRect::from_corners(Origin::new(x, 20), Origin::new(x, 20) + size);
-            let origin =
-                constrained_origin(frame, viewport, &[neighbor], DisplayEdgeMode::Overlap, true)
-                    .unwrap_or(frame.min);
+            let origin = constrained_origin(frame, viewport, &[neighbor]).unwrap_or(frame.min);
             assert_eq!(origin, Origin::new(x.max(0), 20));
             assert_eq!(
                 IRect::from_corners(origin, origin + size)
@@ -1891,17 +1857,11 @@ mod tests {
     }
 
     #[test]
-    fn native_mode_preserves_overflow_and_hidden_overlap_stays_parked() {
+    fn hidden_workspace_stays_parked_away_from_shared_edge() {
         let viewport = IRect::new(0, 20, 1000, 800);
         let neighbor = IRect::new(1000, 0, 2000, 800);
         let frame = IRect::new(990, 790, 1390, 1490);
-        assert_eq!(
-            constrained_origin(frame, viewport, &[neighbor], DisplayEdgeMode::Native, true),
-            None
-        );
-        let origin =
-            constrained_origin(frame, viewport, &[neighbor], DisplayEdgeMode::Overlap, true)
-                .unwrap();
+        let origin = constrained_origin(frame, viewport, &[neighbor]).unwrap();
         assert!(
             origin.y >= viewport.max.y - PARKED_STRIP_SLIVER
                 || origin.y + frame.height() <= viewport.min.y + PARKED_STRIP_SLIVER

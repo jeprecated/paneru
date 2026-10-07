@@ -15,11 +15,9 @@ use crate::{assert_not_on_workspace, assert_on_workspace, assert_window_at, asse
 use super::*;
 
 #[test]
-fn test_supplementary_swaps_one_window_and_restores_scrolling_width() {
-    use crate::types::commands::DisplayEdgeMode;
+fn test_supplementary_swaps_one_window_without_moving_main_strip() {
     let config: Config = (
         MainOptions {
-            display_edge_mode: Some(DisplayEdgeMode::Supplementary),
             supplementary_display: Some(EXT_DISPLAY_ID),
             ..Default::default()
         },
@@ -76,6 +74,13 @@ fn test_supplementary_swaps_one_window_and_restores_scrolling_width() {
     assert_eq!(world.get::<crate::ecs::Bounds>(old).unwrap().0, size);
     let frame = world.get::<Window>(sender).unwrap().frame();
     assert_eq!(frame, IRect::new(-800, TEST_MENUBAR_HEIGHT, 0, 600));
+    // The mock changes frames without WindowServer's automatic Space reassignment.
+    harness
+        .mock_state
+        .update_window(1, |window| window.workspace_id = EXT_WORKSPACE_ID);
+    harness
+        .mock_state
+        .update_window(100, |window| window.workspace_id = TEST_WORKSPACE_ID);
     harness.world().write_message(Event::Command {
         command: Command::DisplayFocus(Direction::West),
     });
@@ -90,32 +95,28 @@ fn test_supplementary_swaps_one_window_and_restores_scrolling_width() {
         frame
     );
     harness.world().write_message(Event::Command {
-        command: Command::DisplayEdges(DisplayEdgeMode::Overlap),
+        command: Command::Reload,
     });
     harness.advance(Duration::from_secs(1));
+    let world = harness.world();
     assert!(
-        harness
-            .world()
+        world
             .get::<crate::ecs::supplementary::SupplementaryWindow>(sender)
-            .is_none()
+            .is_some()
     );
-    assert!(
-        harness
-            .world()
-            .get::<Window>(sender)
-            .unwrap()
-            .frame()
-            .width()
-            < 800
-    );
+    assert_eq!(world.get::<Window>(sender).unwrap().frame(), frame);
+    let strip = world
+        .query::<&LayoutStrip>()
+        .iter(world)
+        .find(|strip| strip.id() == TEST_WORKSPACE_ID)
+        .unwrap();
+    assert_eq!(strip.all_windows(), expected);
 }
 
 #[test]
-fn test_supplementary_mode_allows_normal_laptop_scrolling_when_alone() {
-    use crate::types::commands::DisplayEdgeMode;
+fn test_supplementary_allows_normal_laptop_scrolling_when_alone() {
     let config: Config = (
         MainOptions {
-            display_edge_mode: Some(DisplayEdgeMode::Supplementary),
             supplementary_display: Some(TEST_DISPLAY_ID),
             ..Default::default()
         },
@@ -132,19 +133,8 @@ fn test_supplementary_mode_allows_normal_laptop_scrolling_when_alone() {
 }
 
 #[test]
-fn test_supplementary_mode_evicts_extras_and_releases_role_after_unplug() {
-    use crate::types::commands::DisplayEdgeMode;
-    let config: Config = (
-        MainOptions {
-            display_edge_mode: Some(DisplayEdgeMode::Supplementary),
-            supplementary_display: Some(EXT_DISPLAY_ID),
-            ..Default::default()
-        },
-        vec![],
-    )
-        .into();
+fn test_builtin_supplementary_evicts_extras_and_releases_role_after_unplug() {
     let mut harness = TestHarness::new()
-        .with_config(config)
         .with_windows(2)
         .with_display(
             EXT_DISPLAY_ID,
@@ -157,6 +147,14 @@ fn test_supplementary_mode_evicts_extras_and_releases_role_after_unplug() {
         .with_workspace_window(101, EXT_WORKSPACE_ID, |window| {
             window.frame = IRect::new(-350, 20, 0, 600);
         });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    let (_, mut display) = world
+        .query::<(Entity, &mut Display)>()
+        .iter_mut(world)
+        .find(|(_, display)| display.id() == EXT_DISPLAY_ID)
+        .unwrap();
+    display.set_built_in(true);
     harness.advance(Duration::from_secs(1));
     let world = harness.world();
     let members = world
@@ -199,77 +197,10 @@ fn test_supplementary_mode_evicts_extras_and_releases_role_after_unplug() {
 }
 
 #[test]
-fn test_edge_modes_switch_without_changing_logical_columns() {
-    use crate::types::commands::DisplayEdgeMode;
-    let mut harness = TestHarness::new().with_windows(4).with_display(
-        EXT_DISPLAY_ID,
-        IRect::new(-1920, 0, 0, 1200),
-        vec![EXT_WORKSPACE_ID],
-    );
-    harness.advance(Duration::from_secs(1));
-    harness.world().write_message(Event::Command {
-        command: Command::Window(Operation::Focus(Direction::Last)),
-    });
-    harness.advance(Duration::from_secs(1));
-    let world = harness.world();
-    let columns = world
-        .query::<&LayoutStrip>()
-        .iter(world)
-        .find(|strip| strip.id() == TEST_WORKSPACE_ID)
-        .unwrap()
-        .all_windows();
-    let logical = columns
-        .iter()
-        .map(|entity| {
-            (
-                *entity,
-                world.get::<crate::ecs::LayoutPosition>(*entity).unwrap().0,
-            )
-        })
-        .collect::<Vec<_>>();
-    for mode in [
-        DisplayEdgeMode::Overlap,
-        DisplayEdgeMode::Native,
-        DisplayEdgeMode::Park,
-        DisplayEdgeMode::Overlap,
-    ] {
-        harness.world().write_message(Event::Command {
-            command: Command::DisplayEdges(mode),
-        });
-        harness.advance(Duration::from_secs(1));
-        let world = harness.world();
-        let members = world
-            .query::<&LayoutStrip>()
-            .iter(world)
-            .find(|strip| strip.id() == TEST_WORKSPACE_ID)
-            .unwrap()
-            .all_windows();
-        assert_eq!(members, columns);
-        for (entity, slot) in &logical {
-            assert_eq!(
-                world.get::<crate::ecs::LayoutPosition>(*entity).unwrap().0,
-                *slot
-            );
-            let frame = world.get::<Window>(*entity).unwrap().frame();
-            assert_eq!(frame.width(), TEST_WINDOW_WIDTH);
-            if mode == DisplayEdgeMode::Overlap {
-                assert!(
-                    frame.min.x >= 0,
-                    "overlap must stay on its own screen: {frame:?}"
-                );
-            }
-        }
-        crate::assert_focused!(world, 3);
-    }
-}
-
-#[test]
-fn test_overlap_scrolling_centers_columns_without_crossing_shared_edge() {
-    use crate::types::commands::DisplayEdgeMode;
+fn test_scrolling_centers_columns_without_crossing_shared_edge() {
     let config: Config = (
         MainOptions {
             auto_center: Some(true),
-            display_edge_mode: Some(DisplayEdgeMode::Overlap),
             ..Default::default()
         },
         vec![],
@@ -430,7 +361,7 @@ fn test_late_move_echo_cannot_rewrite_snapped_position() {
     let until = world.resource::<Time>().elapsed() + Duration::from_millis(150);
     world
         .entity_mut(entity)
-        .insert(crate::ecs::display_edges::RecentWindowMove { origin, until });
+        .insert(crate::ecs::window_geometry::RecentWindowMove { origin, until });
     state.os_move_window(0, Origin::new(origin.x + 75, origin.y + 25));
     world.write_message(Event::WindowMoved { window_id: 0 });
     world

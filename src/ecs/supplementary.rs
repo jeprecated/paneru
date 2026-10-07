@@ -6,11 +6,11 @@ use crate::{
     ecs::{
         Bounds, DockPosition, FocusedMarker, Initializing, LayoutPosition, Position,
         RepositionMarker, ResizeMarker, SelectedVirtualMarker, SpawnCommandsExt, Unmanaged,
-        display_edges::DisplayEdges, layout::LayoutStrip, params::ActiveDisplay,
+        layout::LayoutStrip, params::ActiveDisplay,
     },
     events::Event,
     manager::{Display, Size, Window, WindowManager},
-    types::commands::{Command, DisplayEdgeMode},
+    types::commands::Command,
 };
 
 #[derive(Component)]
@@ -54,14 +54,10 @@ pub(crate) fn register(app: &mut App) {
 #[allow(clippy::type_complexity)]
 fn needs_reconcile(
     config: Res<Config>,
-    selection: Option<Res<DisplayEdges>>,
     changed: Query<(), Or<(Changed<Display>, Changed<LayoutStrip>)>>,
     mut removed: RemovedComponents<Display>,
 ) -> bool {
-    removed.read().next().is_some()
-        || config.is_changed()
-        || selection.as_ref().is_some_and(DetectChanges::is_changed)
-        || !changed.is_empty()
+    removed.read().next().is_some() || config.is_changed() || !changed.is_empty()
 }
 
 #[allow(
@@ -71,7 +67,6 @@ fn needs_reconcile(
 )]
 fn reconcile(
     config: Res<Config>,
-    selection: Option<Res<DisplayEdges>>,
     displays: Query<(
         Entity,
         &Display,
@@ -89,9 +84,7 @@ fn reconcile(
     focused: Query<Entity, With<FocusedMarker>>,
     mut commands: Commands,
 ) {
-    let enabled =
-        super::display_edges::mode(&config, selection.as_deref()) == DisplayEdgeMode::Supplementary;
-    let chosen = (enabled && displays.iter().count() > 1)
+    let chosen = (displays.iter().count() > 1)
         .then(|| {
             let configured = config.options().supplementary_display;
             displays
@@ -111,7 +104,7 @@ fn reconcile(
         }
     }
 
-    // Restore original scrolling dimensions when the mode or topology changes.
+    // Restore original scrolling dimensions when display roles or topology change.
     for (entity, mut bounds, saved) in &mut windows {
         let Some(saved) = saved else {
             continue;

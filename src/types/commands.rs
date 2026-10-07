@@ -292,49 +292,6 @@ pub enum MouseMove {
     ToNextDisplay,
 }
 
-/// How native windows are presented at an edge shared with another display.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayEdgeMode {
-    /// Keep the scrolling geometry, allowing native windows to cross displays.
-    Native,
-    /// Hold spilling windows inside their display, overlapping adjacent columns.
-    Overlap,
-    /// Park spilling background windows at a fixed exposed edge.
-    #[default]
-    Park,
-    /// Keep scrolling on the main display and a single window on the laptop.
-    Supplementary,
-}
-
-impl DisplayEdgeMode {
-    /// Parses a display-edge presentation mode.
-    ///
-    /// # Errors
-    /// Returns an error for an unknown mode.
-    pub fn parse(value: &str) -> Result<Self, ParseError> {
-        match value {
-            "native" => Ok(Self::Native),
-            "overlap" => Ok(Self::Overlap),
-            "park" => Ok(Self::Park),
-            "supplementary" => Ok(Self::Supplementary),
-            _ => Err(ParseError::new(format!(
-                "unknown display edge mode '{value}'"
-            ))),
-        }
-    }
-
-    #[must_use]
-    pub fn token(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::Overlap => "overlap",
-            Self::Park => "park",
-            Self::Supplementary => "supplementary",
-        }
-    }
-}
-
 /// Represents a command that can be issued to the window manager.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -357,8 +314,6 @@ pub enum Command {
     Layout(Vec<crate::types::windowset::LayoutOp>),
     /// Rescan displays and windows and realign the existing layouts in place.
     Reload,
-    /// Select a display-edge presentation experiment without restarting.
-    DisplayEdges(DisplayEdgeMode),
     /// Focus the remembered window on the display in this physical direction.
     DisplayFocus(Direction),
     /// Send the focused window to the supplementary display, swapping its occupant.

@@ -53,13 +53,13 @@ use accessibility_prompt::{AccessibilitySetupAction, show_accessibility_setup};
 #[cfg(feature = "lua")]
 pub const VERSION_STRING: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    " (display experiments)",
+    " (supplementary display)",
     " (",
     env!("PANERU_LUA_VERSION"),
     ")"
 );
 #[cfg(not(feature = "lua"))]
-pub const VERSION_STRING: &str = concat!(env!("CARGO_PKG_VERSION"), " (display experiments)");
+pub const VERSION_STRING: &str = concat!(env!("CARGO_PKG_VERSION"), " (supplementary display)");
 
 /// `Paneru` is the main command-line interface structure for the window manager.
 /// It defines the available subcommands for controlling the Paneru daemon.
