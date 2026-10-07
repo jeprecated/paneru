@@ -128,14 +128,15 @@ impl Plugin for WorkspaceEventsPlugin {
             PreUpdate,
             (switch_virtual_workspace_bind, move_virtual_workspace_bind)
                 .run_if(super::supplementary::scrolling_display)
-                .in_set(super::PreUpdateSet::Dispatch),
+                .in_set(super::PreUpdateSet::Dispatch).in_set(super::sleep::LayoutActivity),
         );
         app.add_systems(
             PreUpdate,
             find_orphaned_workspaces
                 .in_set(super::PreUpdateSet::Dispatch)
                 .after(crate::ecs::display::reconcile_displays)
-                .run_if(on_timer(DISPLAY_CHANGE_CHECK_FREQ)),
+                .run_if(on_timer(DISPLAY_CHANGE_CHECK_FREQ))
+                .in_set(super::sleep::LayoutActivity),
         );
         app.add_systems(
             Update,
@@ -706,7 +707,7 @@ fn find_orphaned_workspaces(
 
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn cleanup_unordered_windows(
-    windows: Query<&Window>,
+    windows: Query<(&Window, Has<super::window_geometry::RecentDisplayTransfer>)>,
     workspaces: Query<&LayoutStrip>,
     window_manager: Res<WindowManager>,
     mut commands: Commands,
@@ -719,7 +720,8 @@ pub(crate) fn cleanup_unordered_windows(
                 .into_iter()
                 .filter(|entity| !strip.tabbed(*entity))
         })
-        .filter_map(|entity| windows.get(entity).ok());
+        .filter_map(|entity| windows.get(entity).ok())
+        .filter_map(|(window, transferring)| (!transferring).then_some(window));
 
     for window in windows {
         let window_id = window.id();

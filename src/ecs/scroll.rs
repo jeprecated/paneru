@@ -200,6 +200,7 @@ impl Plugin for ScrollEventsPlugin {
                 .after(super::systems::demux_input_events)
                 .run_if(mission_control_inactive)
                 .run_if(super::supplementary::scrolling_display)
+                .in_set(super::sleep::LayoutActivity)
                 .run_if(paging_enabled)
                 .run_if(on_message::<InputEvent>.or_else(paging_active)),
         );

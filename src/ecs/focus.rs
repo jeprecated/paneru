@@ -110,6 +110,12 @@ impl FocusHistory {
         }
     }
 
+    pub(crate) fn remap_workspace(&mut self, old: WorkspaceId, new: WorkspaceId) {
+        if let Some(memory) = self.by_workspace.remove(&old) {
+            self.by_workspace.insert(new, memory);
+        }
+    }
+
     pub fn forget_workspace(&mut self, workspace: WorkspaceId) {
         self.by_workspace.remove(&workspace);
     }
@@ -410,7 +416,7 @@ fn shares_a_tab_group(
 #[instrument(level = Level::DEBUG, skip_all, fields(focused))]
 pub(super) fn fix_window_size_on_focus(
     focused: Single<(Entity, Has<VerifyWindowSize>), Added<FocusedMarker>>,
-    mut windows: Query<(&mut Window, &mut Bounds, Has<ResizeMarker>)>,
+    mut windows: Query<(&mut Window, &mut Bounds, Has<ResizeMarker>, Has<super::window_geometry::RecentDisplayTransfer>)>,
     mut commands: Commands,
 ) {
     let (entity, verify_size) = *focused;
@@ -420,8 +426,9 @@ pub(super) fn fix_window_size_on_focus(
     if let Ok(mut entity_commands) = commands.get_entity(entity) {
         entity_commands.try_remove::<VerifyWindowSize>();
     }
-    if let Ok((mut window, mut bounds, resizing)) = windows.get_mut(entity)
+    if let Ok((mut window, mut bounds, resizing, transferring)) = windows.get_mut(entity)
         && !resizing
+        && !transferring
         && let Ok(frame) = window.update_frame()
         && frame.size() != bounds.0
     {

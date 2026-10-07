@@ -13,23 +13,42 @@ use tracing::{info, warn};
 use crate::{
     config::Config,
     ecs::{
-        BruteforceWindows, LayoutPosition, Position, RepositionMarker, ResizeMarker,
+        Bounds, BruteforceWindows, LayoutPosition, Position, RepositionMarker, ResizeMarker,
         SelectedVirtualMarker, SpawnWindowTrigger, Unmanaged, layout::LayoutStrip,
     },
     manager::{Application, Display, Window, WindowManager, bruteforce_windows},
     platform::PlatformCallbacks,
 };
 
+#[derive(Clone, Copy)]
+enum ReloadReason {
+    Automatic,
+    Manual,
+    Wake,
+}
+
 #[derive(Resource)]
 pub(crate) struct Reloading {
-    manual: bool,
+    reason: ReloadReason,
     scanned: bool,
     finished: bool,
 }
 
 pub(crate) fn request_reload(commands: &mut Commands, manual: bool) {
     commands.insert_resource(Reloading {
-        manual,
+        reason: if manual {
+            ReloadReason::Manual
+        } else {
+            ReloadReason::Automatic
+        },
+        scanned: false,
+        finished: false,
+    });
+}
+
+pub(crate) fn request_wake_reload(commands: &mut Commands) {
+    commands.insert_resource(Reloading {
+        reason: ReloadReason::Wake,
         scanned: false,
         finished: false,
     });
@@ -39,14 +58,16 @@ pub(crate) fn register(app: &mut App) {
     app.add_systems(
         PreUpdate,
         scan.after(super::display::reconcile_displays)
-            .run_if(resource_exists::<Reloading>),
+            .run_if(resource_exists::<Reloading>)
+            .in_set(super::sleep::LayoutActivity),
     );
     app.add_systems(
         Update,
         realign
             .after(super::triggers::apply_window_defaults)
             .before(super::triggers::apply_window_positions)
-            .run_if(resource_exists::<Reloading>),
+            .run_if(resource_exists::<Reloading>)
+            .in_set(super::sleep::LayoutActivity),
     );
     app.add_systems(PostUpdate, finish.run_if(resource_exists::<Reloading>));
 }
@@ -73,7 +94,7 @@ fn scan(
         return;
     }
     reload.scanned = true;
-    if reload.manual
+    if matches!(reload.reason, ReloadReason::Manual | ReloadReason::Wake)
         && let Some(platform) = platform.as_mut()
     {
         platform.rescan_processes();
@@ -125,6 +146,7 @@ fn realign(world: &mut World) {
     {
         return;
     }
+    let preserve_layout = matches!(world.resource::<Reloading>().reason, ReloadReason::Wake);
     let spaces = world
         .query::<&LayoutStrip>()
         .iter(world)
@@ -163,7 +185,8 @@ fn realign(world: &mut World) {
             .unwrap_or_default();
         for member in members {
             let keep = windows.get(&member).is_some_and(|(id, managed, _)| {
-                *managed && ownership.get(space).is_none_or(|ids| ids.contains(id))
+                *managed
+                    && (preserve_layout || ownership.get(space).is_none_or(|ids| ids.contains(id)))
             });
             if !keep && let Some(mut strip) = world.get_mut::<LayoutStrip>(*entity) {
                 strip.remove(member);
@@ -173,12 +196,19 @@ fn realign(world: &mut World) {
     for (entity, (id, managed, valid)) in &windows {
         if !valid {
             // AX errors can be transient; remove only confirmed dead windows.
-            if world.resource::<WindowManager>().window_is_unordered(*id) {
+            if !preserve_layout && world.resource::<WindowManager>().window_is_unordered(*id) {
                 world.entity_mut(*entity).despawn();
             }
             continue;
         }
-        if !managed {
+        if !managed
+            || preserve_layout
+                && strips.iter().any(|(strip, _, _, _)| {
+                    world
+                        .get::<LayoutStrip>(*strip)
+                        .is_some_and(|strip| strip.contains(*entity))
+                })
+        {
             continue;
         }
         let Some(space) = ownership
@@ -219,6 +249,9 @@ fn realign(world: &mut World) {
             entity.remove::<(RepositionMarker, ResizeMarker)>();
             if let Some(mut position) = entity.get_mut::<Position>() {
                 position.set_changed();
+            }
+            if let Some(mut bounds) = entity.get_mut::<Bounds>() {
+                bounds.set_changed();
             }
             if let Some(mut layout) = entity.get_mut::<LayoutPosition>() {
                 layout.set_changed();

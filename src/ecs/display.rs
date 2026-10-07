@@ -65,7 +65,7 @@ impl Plugin for DisplayEventsPlugin {
         app.init_resource::<DisplayReconcileState>()
             .add_systems(
                 PreUpdate,
-                (display_change_handler, reconcile_displays)
+                (display_change_handler.in_set(super::sleep::LayoutActivity), reconcile_displays)
                     .chain()
                     .in_set(super::PreUpdateSet::Dispatch),
             )
@@ -140,13 +140,18 @@ fn display_change_handler(
 #[allow(clippy::too_many_lines)]
 pub(crate) fn reconcile_displays(
     mut messages: MessageReader<Event>,
-    workspaces: Query<(&LayoutStrip, Entity, Option<&ChildOf>)>,
-    mut displays: Query<(&mut Display, Entity)>,
     window_manager: Res<WindowManager>,
     time: Res<Time>,
     mut state: ResMut<DisplayReconcileState>,
     mut commands: Commands,
+    sleeping: Option<Res<super::sleep::Sleeping>>,
+    waking: Option<Res<super::sleep::WakeRecovery>>,
 ) {
+    if sleeping.is_some() || waking.is_some() {
+        messages.clear();
+        state.pending = None;
+        return;
+    }
     let needs_reconcile = messages.read().fold(false, |changed, event| {
         let reload = matches!(
             event,
@@ -185,7 +190,7 @@ pub(crate) fn reconcile_displays(
 
     debug!("Reconciling displays against OS after wake / resize / configure");
 
-    let mut present_displays: HashMap<CGDirectDisplayID, _> = window_manager
+    let present_displays: HashMap<CGDirectDisplayID, _> = window_manager
         .0
         .present_displays()
         .into_iter()
@@ -206,6 +211,35 @@ pub(crate) fn reconcile_displays(
         return;
     }
 
+    commands.run_system_cached_with(
+        apply_display_snapshot,
+        present_displays.into_values().collect(),
+    );
+    // Rescan after ownership has settled, including newly discovered windows.
+    crate::ecs::reload::request_reload(&mut commands, state.reload);
+    state.reload = false;
+    commands.trigger(SendMessageTrigger(Event::DisplayChanged));
+    if state.verify_again {
+        // A begin-configuration callback can precede the final macOS space
+        // assignment even after a quiet period. Verify once more without
+        // requiring a second notification from Core Graphics.
+        state.verify_again = false;
+        state.pending = Some(Timer::new(DISPLAY_VERIFY_DELAY, TimerMode::Once));
+    }
+}
+
+/// Apply one complete display snapshot and rebase existing strip offsets.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn apply_display_snapshot(
+    bevy::prelude::In(snapshot): bevy::prelude::In<Vec<(Display, Vec<WorkspaceId>)>>,
+    workspaces: Query<(&LayoutStrip, Entity, Option<&ChildOf>)>,
+    mut displays: Query<(&mut Display, Entity)>,
+    mut commands: Commands,
+) {
+    let mut present_displays: HashMap<CGDirectDisplayID, _> = snapshot
+        .into_iter()
+        .map(|(display, spaces)| (display.id(), (display, spaces)))
+        .collect();
     let previous_bounds: HashMap<Entity, IRect> = displays
         .iter()
         .map(|(display, entity)| (entity, display.bounds()))
@@ -263,17 +297,6 @@ pub(crate) fn reconcile_displays(
         migrate_moved_windows_across_displays(world);
         refresh_display_layout(world, &previous_parents);
     });
-    // Rescan after ownership has settled, including newly discovered windows.
-    crate::ecs::reload::request_reload(&mut commands, state.reload);
-    state.reload = false;
-    commands.trigger(SendMessageTrigger(Event::DisplayChanged));
-    if state.verify_again {
-        // A begin-configuration callback can precede the final macOS space
-        // assignment even after a quiet period. Verify once more without
-        // requiring a second notification from Core Graphics.
-        state.verify_again = false;
-        state.pending = Some(Timer::new(DISPLAY_VERIFY_DELAY, TimerMode::Once));
-    }
 }
 
 /// Reconciles virtual workspaces when displays are added or removed:

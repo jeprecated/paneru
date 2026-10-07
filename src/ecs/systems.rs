@@ -103,6 +103,7 @@ type MovableWindows<'w, 's> = Query<
         Has<RepositionMarker>,
         Option<&'static super::window_geometry::RecentWindowMove>,
         Has<super::window_geometry::DisplayConstrainedMarker>,
+        Has<super::window_geometry::RecentDisplayTransfer>,
     ),
     Without<LayoutStrip>,
 >;
@@ -120,6 +121,7 @@ type ResizableWindows<'w, 's> = Query<
         &'static mut Bounds,
         Option<&'static Unmanaged>,
         Has<ResizeMarker>,
+        Has<super::window_geometry::RecentDisplayTransfer>,
     ),
     Without<LayoutStrip>,
 >;
@@ -949,9 +951,10 @@ pub(crate) fn window_resized_update_frame(
             continue;
         };
 
-        let Some((mut window, entity, position, mut bounds, unmanaged, resizing)) = windows
-            .iter_mut()
-            .find(|window| window.0.id() == *window_id)
+        let Some((mut window, entity, position, mut bounds, unmanaged, resizing, transferring)) =
+            windows
+                .iter_mut()
+                .find(|window| window.0.id() == *window_id)
         else {
             continue;
         };
@@ -962,7 +965,7 @@ pub(crate) fn window_resized_update_frame(
         // and `animate_resize_entities` is still stepping toward it, so reading
         // the echo in here would fight the animation producing that difference.
         // Only a resize we did not initiate is new information.
-        if resizing {
+        if resizing || transferring {
             continue;
         }
         let Ok(new_frame) = window.update_frame() else {
@@ -1009,7 +1012,7 @@ pub(crate) fn window_resized_update_frame(
         let diff = old_frame.min.y - new_frame.min.y;
         if diff.abs() > 0
             && let Some(above_entity) = strip.above(entity)
-            && let Ok((_, _, _, mut above_bounds, _, _)) = windows.get_mut(above_entity)
+            && let Ok((_, _, _, mut above_bounds, _, _, _)) = windows.get_mut(above_entity)
             && above_bounds.0.y - diff > 200
         {
             above_bounds.0.y -= diff;
@@ -1028,10 +1031,18 @@ pub(crate) fn window_moved_update_frame(
             continue;
         };
 
-        let Some((mut window, mut position, bounds, unmanaged, repositioning, recent, constrained)) =
-            windows
-                .iter_mut()
-                .find(|window| window.0.id() == *window_id)
+        let Some((
+            mut window,
+            mut position,
+            bounds,
+            unmanaged,
+            repositioning,
+            recent,
+            constrained,
+            transferring,
+        )) = windows
+            .iter_mut()
+            .find(|window| window.0.id() == *window_id)
         else {
             continue;
         };
@@ -1041,7 +1052,7 @@ pub(crate) fn window_moved_update_frame(
         // Our own move, echoed back: `animate_entities` lerps from the current
         // `Position`, so overwriting it with the echoed frame mid-animation
         // restarts each step from behind, and the two chase each other.
-        if repositioning {
+        if repositioning || transferring {
             continue;
         }
         let Ok(new_frame) = window.update_frame() else {

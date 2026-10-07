@@ -41,14 +41,16 @@ pub(crate) fn register(app: &mut App) {
             .run_if(needs_reconcile)
             .run_if(bevy::ecs::schedule::common_conditions::not(
                 bevy::ecs::schedule::common_conditions::resource_exists::<Initializing>,
-            )),
+            ))
+            .in_set(super::sleep::LayoutActivity),
     );
-    app.add_systems(PreUpdate, send_window);
+    app.add_systems(PreUpdate, send_window.in_set(super::sleep::LayoutActivity));
     app.add_systems(
         PostUpdate,
         focus_after_transfer
             .after(super::systems::commit_window_position)
-            .after(super::systems::commit_window_size),
+            .after(super::systems::commit_window_size)
+            .in_set(super::sleep::LayoutActivity),
     );
     app.add_systems(
         PostUpdate,
@@ -56,7 +58,8 @@ pub(crate) fn register(app: &mut App) {
             .after(super::systems::animate_entities)
             .after(super::systems::animate_resize_entities)
             .before(super::systems::commit_window_position)
-            .before(super::systems::commit_window_size),
+            .before(super::systems::commit_window_size)
+            .in_set(super::sleep::LayoutActivity),
     );
 }
 

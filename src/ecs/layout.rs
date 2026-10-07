@@ -986,6 +986,11 @@ impl LayoutStrip {
         self.columns.iter().filter_map(Column::top).collect()
     }
 
+    /// Preserve columns and virtual rows when macOS replaces a native Space.
+    pub(crate) fn set_workspace_id(&mut self, id: WorkspaceId) {
+        self.id = id;
+    }
+
     pub fn id(&self) -> WorkspaceId {
         self.id
     }
