@@ -16,6 +16,9 @@ use crate::{
 #[derive(Component)]
 pub(crate) struct SupplementaryDisplay;
 
+#[derive(Component)]
+struct FocusAfterTransfer;
+
 #[derive(Component, Clone, Copy)]
 pub(crate) struct SupplementaryWindow {
     pub size: Size,
@@ -41,6 +44,12 @@ pub(crate) fn register(app: &mut App) {
             )),
     );
     app.add_systems(PreUpdate, send_window);
+    app.add_systems(
+        PostUpdate,
+        focus_after_transfer
+            .after(super::systems::commit_window_position)
+            .after(super::systems::commit_window_size),
+    );
     app.add_systems(
         PostUpdate,
         fit_window
@@ -250,6 +259,7 @@ fn send_window(
     windows: Query<(&Bounds, Option<&Unmanaged>), With<Window>>,
     focused: Query<Entity, With<FocusedMarker>>,
     wm: Res<WindowManager>,
+    time: Res<Time>,
     mut commands: Commands,
 ) {
     if !messages.read().any(|event| {
@@ -314,6 +324,15 @@ fn send_window(
         }
         strip.append(entity);
     }
+    let until = time.elapsed() + std::time::Duration::from_millis(500);
+    commands
+        .entity(entity)
+        .insert(super::window_geometry::RecentDisplayTransfer { until });
+    if let Some(occupant) = occupant {
+        commands
+            .entity(occupant)
+            .insert(super::window_geometry::RecentDisplayTransfer { until });
+    }
     commands.entity(entity).insert(SupplementaryWindow {
         size: bounds.0,
         width_ratio: f64::from(bounds.0.x) / f64::from(source_width.max(1)),
@@ -328,8 +347,20 @@ fn send_window(
     super::workspace::spawn_snap_strip_guard(source, &mut commands);
     super::workspace::spawn_snap_strip_guard(target, &mut commands);
     let focus = occupant.or(neighbor).unwrap_or(entity);
-    super::workspace::spawn_restore_focus_guard(focus, &mut commands);
-    commands.focus_entity(focus, true);
+    // Focus only after committing both physical frames. Raising the occupant
+    // while it still lived on the laptop let macOS activate the old screen.
+    commands.entity(focus).insert(FocusAfterTransfer);
+}
+
+fn focus_after_transfer(
+    pending: Populated<Entity, With<FocusAfterTransfer>>,
+    mut commands: Commands,
+) {
+    for entity in &pending {
+        commands.entity(entity).remove::<FocusAfterTransfer>();
+        super::workspace::spawn_restore_focus_guard(entity, &mut commands);
+        commands.focus_entity(entity, true);
+    }
 }
 
 #[allow(clippy::type_complexity)]

@@ -114,6 +114,50 @@ fn test_supplementary_swaps_one_window_without_moving_main_strip() {
 }
 
 #[test]
+fn test_supplementary_swap_ignores_stale_space_ownership_during_screen_switch() {
+    let config: Config = (
+        MainOptions {
+            supplementary_display: Some(EXT_DISPLAY_ID),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_windows(2)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-800, 0, 0, 600),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-750, 20, -350, 600);
+        });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::DisplaySupplementary,
+    });
+    harness.advance(Duration::from_millis(50));
+    harness.world().write_message(Event::Command {
+        command: Command::DisplayFocus(Direction::West),
+    });
+    harness.advance(Duration::from_millis(200));
+    assert_on_workspace!(harness.world(), 0, EXT_WORKSPACE_ID);
+    assert_on_workspace!(harness.world(), 100, TEST_WORKSPACE_ID);
+    assert_not_on_workspace!(harness.world(), 100, EXT_WORKSPACE_ID);
+    harness
+        .mock_state
+        .update_window(0, |window| window.workspace_id = EXT_WORKSPACE_ID);
+    harness
+        .mock_state
+        .update_window(100, |window| window.workspace_id = TEST_WORKSPACE_ID);
+    harness.advance(Duration::from_secs(1));
+    assert_on_workspace!(harness.world(), 0, EXT_WORKSPACE_ID);
+    assert_on_workspace!(harness.world(), 100, TEST_WORKSPACE_ID);
+}
+
+#[test]
 fn test_supplementary_allows_normal_laptop_scrolling_when_alone() {
     let config: Config = (
         MainOptions {
