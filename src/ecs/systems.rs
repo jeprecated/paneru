@@ -26,7 +26,7 @@ use super::{
 use crate::config::{Config, decorations::BorderRadiusOption};
 use crate::ecs::display::FloatingLayer;
 use crate::ecs::layout::{Column, LayoutStrip};
-use crate::ecs::params::{ActiveDisplay, FrameActivity, Windows};
+use crate::ecs::params::{FrameActivity, Windows};
 use crate::ecs::{
     ActiveWorkspaceMarker, Bounds, BruteforceWindows, FlashMessage, FocusedMarker, Initializing,
     LowPowerMode, MissionControlActive, Position, ReadDisplayProperties, RestoreWindowState,
@@ -101,6 +101,8 @@ type MovableWindows<'w, 's> = Query<
         &'static Bounds,
         Option<&'static Unmanaged>,
         Has<RepositionMarker>,
+        Option<&'static super::window_geometry::RecentWindowMove>,
+        Has<super::window_geometry::DisplayConstrainedMarker>,
     ),
     Without<LayoutStrip>,
 >;
@@ -177,6 +179,7 @@ pub fn gather_displays(window_manager: Res<WindowManager>, mut commands: Command
         return;
     };
     for (display, workspaces) in window_manager.present_displays() {
+        let display_id = display.id();
         let origin = Position(display.bounds().min);
         let entity = if display.id() == active_display_id {
             commands.spawn((display, ActiveDisplayMarker))
@@ -187,12 +190,12 @@ pub fn gather_displays(window_manager: Res<WindowManager>, mut commands: Command
 
         commands.trigger(ReadDisplayProperties(entity));
 
-        let Ok(active_space) = window_manager.active_display_space(active_display_id) else {
-            return;
+        let Ok(active_space) = window_manager.active_display_space(display_id) else {
+            continue;
         };
 
         for id in workspaces {
-            let active = id == active_space;
+            let active = display_id == active_display_id && id == active_space;
             commands.spawn_layout_strip(LayoutStrip::new(id, 0), origin.0, entity, active);
             commands.spawn((FloatingLayer::new(id), ChildOf(entity)));
         }
@@ -936,7 +939,7 @@ pub(crate) fn pump_events(
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
-pub(super) fn window_resized_update_frame(
+pub(crate) fn window_resized_update_frame(
     mut messages: MessageReader<Event>,
     mut windows: ResizableWindows,
     mut workspaces: Query<(&LayoutStrip, &mut Position)>,
@@ -973,12 +976,15 @@ pub(super) fn window_resized_update_frame(
             .is_some_and(|strip| strip.0.tabbed(entity));
 
         let old_frame = IRect::from_corners(position.0, position.0 + bounds.0);
-        if old_frame.size() != new_frame.size() {
-            if tabbed {
-                bounds.bypass_change_detection().0 = new_frame.size();
-            } else {
-                bounds.0 = new_frame.size();
-            }
+        if old_frame.size() == new_frame.size() {
+            // Some apps echo a move as AXWindowResized as well. There is no
+            // size change to anchor, so do not rebase the whole strip on it.
+            continue;
+        }
+        if tabbed {
+            bounds.bypass_change_detection().0 = new_frame.size();
+        } else {
+            bounds.0 = new_frame.size();
         }
 
         // If the window was resized, shift LayoutStrip slightly to avoid moving right corner.
@@ -1015,15 +1021,17 @@ pub(super) fn window_resized_update_frame(
 pub(crate) fn window_moved_update_frame(
     mut messages: MessageReader<Event>,
     mut windows: MovableWindows,
+    time: Res<Time>,
 ) {
     for event in messages.read() {
         let Event::WindowMoved { window_id } = event else {
             continue;
         };
 
-        let Some((mut window, mut position, bounds, unmanaged, repositioning)) = windows
-            .iter_mut()
-            .find(|window| window.0.id() == *window_id)
+        let Some((mut window, mut position, bounds, unmanaged, repositioning, recent, constrained)) =
+            windows
+                .iter_mut()
+                .find(|window| window.0.id() == *window_id)
         else {
             continue;
         };
@@ -1039,6 +1047,16 @@ pub(crate) fn window_moved_update_frame(
         let Ok(new_frame) = window.update_frame() else {
             continue;
         };
+
+        // The OS may clamp a snapped or parked frame and acknowledge it after
+        // our animation has finished. Preserve the logical scrolling position.
+        if constrained
+            || recent.is_some_and(|request| {
+                time.elapsed() < request.until && position.0 == request.origin
+            })
+        {
+            continue;
+        }
 
         let old_frame = IRect::from_corners(position.0, position.0 + bounds.0);
         if old_frame.min != new_frame.min {
@@ -1254,16 +1272,20 @@ pub(super) fn update_overlays(
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
-pub(super) fn commit_window_position(
-    mut moved_windows: Populated<(&mut Window, &Position), Changed<Position>>,
+pub(crate) fn commit_window_position(
+    mut moved_windows: Populated<(Entity, &mut Window, &Position), Changed<Position>>,
+    time: Res<Time>,
+    mut commands: Commands,
 ) {
-    // `par_iter_mut` runs on `ComputeTaskPool` worker threads, which have no
-    // `CFRunLoop` of their own to drain thread-local autorelease pools.
-    moved_windows
-        .par_iter_mut()
-        .for_each(|(mut window, position)| {
-            objc2::rc::autoreleasepool(|_| window.reposition(position.0));
-        });
+    for (entity, mut window, position) in &mut moved_windows {
+        window.reposition(position.0);
+        commands
+            .entity(entity)
+            .insert(super::window_geometry::RecentWindowMove {
+                origin: position.0,
+                until: time.elapsed() + Duration::from_millis(150),
+            });
+    }
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
@@ -1297,8 +1319,7 @@ pub(super) fn verify_window_position(
 /// the window wherever it went next. A window in no strip is of the active
 /// display.
 #[instrument(level = Level::TRACE, skip_all)]
-pub(super) fn commit_window_size(
-    active_display: ActiveDisplay,
+pub(crate) fn commit_window_size(
     strips: Query<(&LayoutStrip, &ChildOf)>,
     displays: Query<&Display>,
     mut resized_windows: Populated<
@@ -1306,25 +1327,22 @@ pub(super) fn commit_window_size(
         Changed<Bounds>,
     >,
 ) {
-    let fallback = active_display.bounds().width();
-    let widths: EntityHashMap<i32> = resized_windows
-        .iter()
-        .map(|(entity, ..)| {
-            let width = strips
-                .iter()
-                .find(|(strip, _)| strip.contains(entity))
-                .and_then(|(_, parent)| displays.get(parent.parent()).ok())
-                .map_or(fallback, |display| display.bounds().width());
-            (entity, width)
-        })
-        .collect();
-    resized_windows
-        .par_iter_mut()
-        .for_each(|(entity, mut window, size, mut width_ratio)| {
-            let width = widths.get(&entity).copied().unwrap_or(fallback);
-            width_ratio.0 = f64::from(size.0.x) / f64::from(width);
-            objc2::rc::autoreleasepool(|_| window.resize(size.0));
-        });
+    for (entity, mut window, size, mut width_ratio) in &mut resized_windows {
+        let owner = strips
+            .iter()
+            .find_map(|(strip, child)| strip.contains(entity).then_some(child.parent()));
+        let display = owner
+            .and_then(|owner| displays.get(owner).ok())
+            .or_else(|| {
+                displays
+                    .iter()
+                    .find(|display| display.bounds().contains(window.frame().center()))
+            });
+        if let Some(display) = display {
+            width_ratio.0 = f64::from(size.0.x) / f64::from(display.width());
+        }
+        window.resize(size.0);
+    }
 }
 
 /// Restores user-visible window state before Paneru shuts down: clears any

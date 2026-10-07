@@ -1224,13 +1224,25 @@ pub(super) fn spawn_window_trigger(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_window_defaults(
     mut windows: WindowDefaultsQueries,
     apps: Query<(Entity, &Application)>,
     active_display: ActiveDisplay,
+    displays: Query<(&Display, Entity, Option<&DockPosition>)>,
+    strips: Query<(&LayoutStrip, &ChildOf)>,
+    wm: Res<WindowManager>,
     config: Res<Config>,
     initializing: Option<Res<Initializing>>,
 ) {
+    let ownership = strips
+        .iter()
+        .filter_map(|(strip, child)| {
+            wm.windows_in_workspace(strip.id())
+                .ok()
+                .map(|ids| (child.parent(), ids))
+        })
+        .collect::<Vec<_>>();
     let focused_ratio = windows.p1().single().ok().map(|ratio| ratio.0);
     for (ref mut window, mut position, mut bounds, mut width_ratio, child) in windows.p0() {
         let Ok((_, app)) = apps.get(child.parent()) else {
@@ -1238,6 +1250,14 @@ pub(super) fn apply_window_defaults(
         };
 
         let properties = WindowProperties::new(app, window, &config);
+        let owner = ownership
+            .iter()
+            .find_map(|(display, ids)| ids.contains(&window.id()).then_some(*display));
+        let (display, _, dock) = owner.and_then(|owner| displays.get(owner).ok()).unwrap_or((
+            active_display.display(),
+            active_display.entity(),
+            active_display.dock(),
+        ));
         debug!("Applying window defaults for '{}'", window.id());
 
         let initializing = initializing.is_some();
@@ -1246,7 +1266,7 @@ pub(super) fn apply_window_defaults(
         if properties.floating() {
             // Skip grid_ratios during init: we don't know this window's display.
             if !initializing && let Some((rx, ry, rw, rh)) = properties.grid_ratios() {
-                let bounds = active_display.actual_bounds(&config);
+                let bounds = display.actual_display_bounds(dock, &config);
                 let x = bounds.min.x + round_px(f64::from(bounds.width()) * rx);
                 let y = bounds.min.y + round_px(f64::from(bounds.height()) * ry);
                 let w = round_px(f64::from(bounds.width()) * rw);
@@ -1260,7 +1280,7 @@ pub(super) fn apply_window_defaults(
         let hpadding = properties.horizontal_padding();
         window.set_padding(WindowPadding::Vertical(vpadding.clamp(0, 50)));
         window.set_padding(WindowPadding::Horizontal(hpadding.clamp(0, 50)));
-        let display_width = f64::from(active_display.bounds().width());
+        let display_width = f64::from(display.width());
         if let Ok(frame) = window.update_frame() {
             position.0 = frame.min;
             bounds.bypass_change_detection().0 = frame.size();
@@ -1559,7 +1579,7 @@ pub(super) fn window_removal_trigger(
 ) {
     let entity = trigger.event().entity;
 
-    if let Some(mut strip) = workspaces.iter_mut().find(|strip| strip.contains(entity)) {
+    for mut strip in workspaces.iter_mut().filter(|strip| strip.contains(entity)) {
         debug!(
             "Removing despawned entity {entity} from strip {}",
             strip.id()
