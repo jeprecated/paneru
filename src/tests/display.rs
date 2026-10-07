@@ -1210,3 +1210,134 @@ fn test_empty_baseline_row_survives_display_removal() {
         })
         .run(commands);
 }
+
+#[test]
+fn test_reload_prunes_stale_layout_entries() {
+    TestHarness::new()
+        .with_windows(1)
+        .on_iteration(1, |world, _| {
+            let dead = world.spawn_empty().id();
+            world
+                .query::<&mut LayoutStrip>()
+                .single_mut(world)
+                .unwrap()
+                .append(dead);
+            world.entity_mut(dead).despawn();
+        })
+        .on_iteration(2, |world, _| {
+            let members = world
+                .query::<&LayoutStrip>()
+                .single(world)
+                .unwrap()
+                .all_windows();
+            assert_eq!(members.len(), 1);
+            assert!(world.get::<Window>(members[0]).is_some());
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::Command {
+                command: Command::Reload,
+            },
+        ]);
+}
+
+#[test]
+fn test_reload_discovers_missed_window_and_replays_frames() {
+    TestHarness::new()
+        .with_windows(2)
+        .on_iteration(1, |world, state| {
+            let original = world
+                .query::<(Entity, &Window)>()
+                .iter(world)
+                .find(|(_, window)| window.id() == 0)
+                .unwrap()
+                .0;
+            world
+                .entity_mut(original)
+                .insert(crate::ecs::Unmanaged::Floating);
+            state.spawn_window(
+                TEST_PROCESS_ID,
+                TEST_WORKSPACE_ID,
+                100,
+                IRect::new(50, 50, 450, 1050),
+            );
+            state.update_window(1, |window| window.frame = IRect::new(75, 75, 475, 1075));
+        })
+        .on_iteration(2, |world, _| {
+            assert_on_workspace!(world, 1, TEST_WORKSPACE_ID);
+            assert_on_workspace!(world, 100, TEST_WORKSPACE_ID);
+            assert_not_on_workspace!(world, 0, TEST_WORKSPACE_ID);
+            let window = world
+                .query::<&Window>()
+                .iter(world)
+                .find(|window| window.id() == 1)
+                .unwrap();
+            assert_eq!(window.frame().min.y, TEST_MENUBAR_HEIGHT);
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 1 },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::Command {
+                command: Command::Reload,
+            },
+        ]);
+}
+
+#[test]
+fn test_reload_preserves_virtual_workspace_membership() {
+    TestHarness::new()
+        .with_windows(3)
+        .on_iteration(1, |world, _| {
+            let entity = world
+                .query::<(Entity, &Window)>()
+                .iter(world)
+                .find(|(_, window)| window.id() == 0)
+                .unwrap()
+                .0;
+            assert!(
+                world
+                    .query::<&LayoutStrip>()
+                    .iter(world)
+                    .any(|strip| strip.virtual_index == 1 && strip.contains(entity))
+            );
+        })
+        .on_iteration(2, |world, _| {
+            let entity = world
+                .query::<(Entity, &Window)>()
+                .iter(world)
+                .find(|(_, window)| window.id() == 0)
+                .unwrap()
+                .0;
+            assert!(
+                world
+                    .query::<&LayoutStrip>()
+                    .iter(world)
+                    .any(|strip| strip.virtual_index == 1 && strip.contains(entity))
+            );
+            assert_eq!(
+                world
+                    .query_filtered::<&LayoutStrip, With<crate::ecs::ActiveWorkspaceMarker>>()
+                    .single(world)
+                    .unwrap()
+                    .virtual_index,
+                1
+            );
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::Command {
+                command: Command::Window(Operation::VirtualMove(
+                    Direction::South,
+                    MoveFocus::Follow,
+                )),
+            },
+            Event::Command {
+                command: Command::Reload,
+            },
+        ]);
+}

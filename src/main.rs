@@ -110,6 +110,9 @@ pub enum SubCmd {
     /// Restarts the `paneru` background service.
     Restart,
 
+    /// Rescans windows and displays and realigns the running daemon's layouts.
+    Reload,
+
     /// Sends a command via a Unix socket to the running `paneru` daemon.
     SendCmd {
         #[arg(trailing_var_arg = true)]
@@ -237,6 +240,7 @@ fn main() -> Result<()> {
         SubCmd::Start => service()?.start()?,
         SubCmd::Stop => service()?.stop()?,
         SubCmd::Restart => service()?.restart()?,
+        SubCmd::Reload => client::run(ClientCommand::Send(vec!["reload".into()]))?,
         SubCmd::SendCmd { cmd } => client::run(ClientCommand::Send(cmd))?,
         SubCmd::Query { query } => client::run(ClientCommand::Query(query.kind()))?,
         SubCmd::Subscribe { json: _ } => client::run(ClientCommand::Subscribe)?,

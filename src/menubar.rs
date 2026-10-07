@@ -99,6 +99,11 @@ define_class!(
         fn quit_paneru(&self, _: &NSMenuItem) {
             self.send_command(Command::Quit);
         }
+
+        #[unsafe(method(reloadWindows:))]
+        fn reload_windows(&self, _: &NSMenuItem) {
+            self.send_command(Command::Reload);
+        }
     }
 );
 
@@ -287,6 +292,7 @@ impl MenuBarManager {
         self.copy_rule_item = Some(self.add_item("Copy Window Rule", Some(sel!(copyWindowRule:))));
 
         self.menu.addItem(&NSMenuItem::separatorItem(self.mtm));
+        self.add_item("Reload Windows and Displays", Some(sel!(reloadWindows:)));
         self.add_item("Quit Paneru", Some(sel!(quitPaneru:)));
         self.configured_widths = widths.to_vec();
     }

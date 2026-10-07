@@ -47,6 +47,7 @@ pub mod layout;
 pub mod layout_ops;
 pub mod mouse;
 pub mod params;
+pub(crate) mod reload;
 pub(crate) mod restore;
 pub mod script_state;
 pub mod scroll;
@@ -74,6 +75,7 @@ pub fn register_systems(app: &mut bevy::app::App) {
     const LOW_POWER_MODE_CHECK: Duration = Duration::from_mins(1);
     const APP_OBSERVABILITY_CHECK_FREQ: Duration = Duration::from_millis(200);
     window_geometry::register(app);
+    reload::register(app);
 
     let not_swiping = |scrolling: Query<&Scrolling, With<ActiveWorkspaceMarker>>| {
         scrolling

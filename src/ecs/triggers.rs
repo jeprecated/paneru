@@ -1254,6 +1254,7 @@ pub(super) fn apply_window_positions(
     apps: Query<&Application>,
     wm: Res<WindowManager>,
     initializing: Option<Res<Initializing>>,
+    reloading: Option<Res<super::reload::Reloading>>,
     restore: Option<Res<crate::ecs::restore::SessionRestore>>,
     restoration: Option<Res<PaneruState>>,
     mut ctx: WindowCtx,
@@ -1312,6 +1313,7 @@ pub(super) fn apply_window_positions(
             .iter_mut()
             .find_map(|(strip, _, _)| strip.contains(entity).then_some(strip));
         if initializing.is_none()
+            && reloading.is_none()
             && allready_inserted.is_none()
             && let Some(mut strip) = workspaces.iter_mut().find_map(|(strip, active, selected)| {
                 owner_space
@@ -1347,6 +1349,7 @@ pub(super) fn apply_window_positions(
         // During init, skip per-window reshuffles. finish_setup does a single
         // reshuffle after all windows are added.
         if initializing.is_none()
+            && reloading.is_none()
             && owner_space.is_none_or(|space| {
                 workspaces
                     .iter()

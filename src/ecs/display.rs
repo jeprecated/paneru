@@ -20,6 +20,7 @@ use std::pin::Pin;
 use std::time::Duration;
 use tracing::{Level, debug, error, instrument, warn};
 
+use crate::commands::Command;
 use crate::config::Config;
 use crate::ecs::layout::{LayoutStrip, PARKED_STRIP_SLIVER};
 use crate::ecs::workspace::PreviousStripPosition;
@@ -44,6 +45,7 @@ pub(crate) struct DisplayReconcileState {
     pending: Option<Timer>,
     retries_left: u8,
     verify_again: bool,
+    reload: bool,
 }
 
 pub struct DisplayEventsPlugin;
@@ -128,7 +130,15 @@ pub(crate) fn reconcile_displays(
     mut commands: Commands,
 ) {
     let needs_reconcile = messages.read().fold(false, |changed, event| {
+        let reload = matches!(
+            event,
+            Event::Command {
+                command: Command::Reload
+            }
+        );
+        state.reload |= reload;
         changed
+            | reload
             | matches!(
                 event,
                 Event::SystemWoke { .. }
@@ -232,6 +242,9 @@ pub(crate) fn reconcile_displays(
     }
 
     commands.queue(move |world: &mut World| refresh_display_layout(world, &previous_parents));
+    // Rescan after ownership has settled, including newly discovered windows.
+    crate::ecs::reload::request_reload(&mut commands, state.reload);
+    state.reload = false;
     commands.trigger(SendMessageTrigger(Event::DisplayChanged));
     if state.verify_again {
         // A begin-configuration callback can precede the final macOS space

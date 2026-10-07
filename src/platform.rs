@@ -256,6 +256,14 @@ pub struct PlatformCallbacks {
 }
 
 impl PlatformCallbacks {
+    /// Re-emit launch notifications to recover applications missed by observers.
+    pub(crate) fn rescan_processes(&mut self) {
+        if let Some(handler) = self.process_handler.as_mut() {
+            // The callback allocation stays pinned; rescan does not move it.
+            unsafe { handler.as_mut().get_unchecked_mut() }.rescan();
+        }
+    }
+
     /// Creates a new `PlatformCallbacks` instance, initializing various handlers and watchers.
     /// This involves setting up `Config`, `WorkspaceObserver`, `ProcessHandler`, `InputHandler`,
     /// `MissionControlHandler`, `DisplayHandler`, and `FsEventWatcher`.
