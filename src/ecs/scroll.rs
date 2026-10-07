@@ -115,7 +115,7 @@ impl PageGestureState {
 }
 
 fn paging_enabled(config: Res<Config>, state: Res<PageGestureState>) -> bool {
-    config.swipe_gesture_paging() || state.has_work() || state.config.as_ref().is_some_and(|c| c.0)
+    (config.swipe_gesture_paging() && !config.swipe_gesture_window_step()) || state.has_work() || state.config.as_ref().is_some_and(|c| c.0)
 }
 
 fn paging_active(config: Res<Config>, state: Res<PageGestureState>) -> bool {
@@ -209,6 +209,9 @@ impl Plugin for ScrollEventsPlugin {
         app.add_systems(
             Update,
             (
+                step_swipe_gesture
+                    .run_if(mission_control_inactive)
+                    .run_if(on_message::<InputEvent>),
                 vertical_swipe_gesture
                     .run_if(mission_control_inactive)
                     .run_if(on_message::<InputEvent>),
@@ -238,7 +241,8 @@ fn paging_gesture(
     mut events: MessageWriter<PageFocusRequest>,
     mut commands: Commands,
 ) {
-    let current_config = config.swipe_paging_config();
+    let mut current_config = config.swipe_paging_config();
+    current_config.0 &= !config.swipe_gesture_window_step();
     if state.config.as_ref() != Some(&current_config) {
         state.reset();
         state.config = Some(current_config.clone());
@@ -331,7 +335,7 @@ fn swipe_gesture(
 
     for InputEvent(event) in messages.read() {
         match event {
-            Event::TouchpadDown => {
+            Event::TouchpadDown if !config.swipe_gesture_window_step() && !config.swipe_gesture_paging() => {
                 touchpad_down = true;
                 total_delta = 0.0;
             }
@@ -340,7 +344,7 @@ fn swipe_gesture(
                 has_scroll_event = true;
             }
             Event::Swipe { delta, fingers, .. }
-                if config
+                if !config.swipe_gesture_window_step() && config
                     .swipe_gesture_fingers()
                     .is_some_and(|fingers_configured| fingers_configured == *fingers)
                     && !config.swipe_gesture_paging() =>
@@ -630,6 +634,79 @@ struct VerticalGestureState {
     fired: bool,
 }
 
+/// One action per physical gesture, shared across axes so a diagonal swipe
+/// cannot both focus a column and change workspace. Finger lift, rather than
+/// an idle timeout, rearms it: pausing mid-swipe must not repeat the action.
+#[derive(Default)]
+struct GestureStepState {
+    horizontal: f64,
+    vertical: f64,
+    fired: bool,
+}
+
+#[instrument(level = Level::TRACE, skip_all)]
+// Physical finger counts are far below f64's exact integer limit.
+#[allow(clippy::cast_precision_loss)]
+fn step_swipe_gesture(
+    mut messages: MessageReader<InputEvent>,
+    active_display: ActiveDisplay,
+    config: Res<Config>,
+    mut commands: Commands,
+    mut state: Local<GestureStepState>,
+) {
+    if !config.swipe_gesture_window_step() || active_display.fullscreen().is_some() {
+        messages.clear();
+        *state = GestureStepState::default();
+        return;
+    }
+
+    let threshold = config.swipe_gesture_step_threshold();
+    for InputEvent(event) in messages.read() {
+        match event {
+            Event::TouchpadDown | Event::TouchpadUp => {
+                *state = GestureStepState::default();
+            }
+            Event::Swipe { delta, fingers, .. }
+                if !state.fired
+                    && *fingers >= 3
+                    && config.swipe_gesture_fingers() == Some(*fingers) =>
+            {
+                state.horizontal += delta / *fingers as f64;
+                if state.horizontal.abs() >= threshold {
+                    // Positive deltas mean fingers move left. Natural scrolling
+                    // reveals the column to the right; reversed does the opposite.
+                    let direction = if state.horizontal > 0.0 {
+                        Direction::East
+                    } else {
+                        Direction::West
+                    };
+                    let direction = match config.swipe_gesture_direction() {
+                        SwipeGestureDirection::Natural => direction,
+                        SwipeGestureDirection::Reversed => direction.reverse(),
+                    };
+                    commands.trigger(SendMessageTrigger(Event::Command {
+                        command: Command::Window(Operation::Focus(direction)),
+                    }));
+                    state.fired = true;
+                }
+            }
+            Event::VerticalSwipe { delta, fingers }
+                if !state.fired
+                    && *fingers >= 3
+                    && config.swipe_vertical()
+                    && config.swipe_gesture_fingers() == Some(*fingers) =>
+            {
+                state.vertical += delta / *fingers as f64;
+                if state.vertical.abs() >= threshold {
+                    switch_virtual_workspace(state.vertical, &config, &mut commands);
+                    state.fired = true;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[instrument(level = Level::TRACE, skip_all)]
 fn vertical_swipe_gesture(
     mut messages: MessageReader<InputEvent>,
@@ -658,9 +735,10 @@ fn vertical_swipe_gesture(
                 switch_virtual_workspace(*delta, &config, &mut commands);
             }
             Event::VerticalSwipe { delta, fingers }
-                if config
-                    .swipe_gesture_fingers()
-                    .is_some_and(|fingers_configured| fingers_configured == *fingers) =>
+                if !config.swipe_gesture_window_step()
+                    && config
+                        .swipe_gesture_fingers()
+                        .is_some_and(|fingers_configured| fingers_configured == *fingers) =>
             {
                 state.last_event = Some(Instant::now());
 
