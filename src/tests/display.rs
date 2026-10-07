@@ -1341,3 +1341,233 @@ fn test_reload_preserves_virtual_workspace_membership() {
             },
         ]);
 }
+
+#[test]
+fn test_supplementary_swaps_one_window_without_moving_main_strip() {
+    let config: Config = (
+        MainOptions {
+            supplementary_display: Some(EXT_DISPLAY_ID),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_windows(3)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-800, 0, 0, 600),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-750, 20, -350, 600);
+        });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Focus(Direction::Nth(1))),
+    });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    let sender = find_window_entity(1, world);
+    let old = find_window_entity(100, world);
+    let size = world.get::<crate::ecs::Bounds>(sender).unwrap().0;
+    let offset = world
+        .query::<(&LayoutStrip, &crate::ecs::Position)>()
+        .iter(world)
+        .find(|(strip, _)| strip.id() == TEST_WORKSPACE_ID)
+        .unwrap()
+        .1
+        .0;
+    harness.world().write_message(Event::Command {
+        command: Command::DisplaySupplementary,
+    });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    assert_on_workspace!(world, 1, EXT_WORKSPACE_ID);
+    assert_on_workspace!(world, 100, TEST_WORKSPACE_ID);
+    crate::assert_focused!(world, 100);
+    let expected = vec![
+        find_window_entity(0, world),
+        old,
+        find_window_entity(2, world),
+    ];
+    let strip = world
+        .query::<(&LayoutStrip, &crate::ecs::Position)>()
+        .iter(world)
+        .find(|(strip, _)| strip.id() == TEST_WORKSPACE_ID)
+        .unwrap();
+    assert_eq!(strip.0.all_windows(), expected);
+    assert_eq!(strip.1.0, offset);
+    assert_eq!(world.get::<crate::ecs::Bounds>(old).unwrap().0, size);
+    let frame = world.get::<Window>(sender).unwrap().frame();
+    assert_eq!(frame, IRect::new(-800, TEST_MENUBAR_HEIGHT, 0, 600));
+    // The mock changes frames without WindowServer's automatic Space reassignment.
+    harness
+        .mock_state
+        .update_window(1, |window| window.workspace_id = EXT_WORKSPACE_ID);
+    harness
+        .mock_state
+        .update_window(100, |window| window.workspace_id = TEST_WORKSPACE_ID);
+    // Focus the new laptop occupant through the ordinary AX event path;
+    // the screen-focus command is introduced in the next feature chunk.
+    harness.mock_state.set_focused_window(1);
+    harness
+        .world()
+        .write_message(Event::WindowFocused { window_id: 1 });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Virtual(Direction::South)),
+    });
+    harness.advance(Duration::from_secs(1));
+    assert_on_workspace!(harness.world(), 1, EXT_WORKSPACE_ID);
+    assert_eq!(
+        harness.world().get::<Window>(sender).unwrap().frame(),
+        frame
+    );
+    harness.world().write_message(Event::Command {
+        command: Command::Reload,
+    });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    assert!(
+        world
+            .get::<crate::ecs::supplementary::SupplementaryWindow>(sender)
+            .is_some()
+    );
+    assert_eq!(world.get::<Window>(sender).unwrap().frame(), frame);
+    let strip = world
+        .query::<&LayoutStrip>()
+        .iter(world)
+        .find(|strip| strip.id() == TEST_WORKSPACE_ID)
+        .unwrap();
+    assert_eq!(strip.all_windows(), expected);
+}
+
+#[test]
+fn test_supplementary_swap_ignores_stale_space_ownership_during_screen_switch() {
+    let config: Config = (
+        MainOptions {
+            supplementary_display: Some(EXT_DISPLAY_ID),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_windows(2)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-800, 0, 0, 600),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-750, 20, -350, 600);
+        });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::DisplaySupplementary,
+    });
+    harness.advance(Duration::from_millis(50));
+    harness.mock_state.set_focused_window(0);
+    harness
+        .world()
+        .write_message(Event::WindowFocused { window_id: 0 });
+    harness.advance(Duration::from_millis(200));
+    assert_on_workspace!(harness.world(), 0, EXT_WORKSPACE_ID);
+    assert_on_workspace!(harness.world(), 100, TEST_WORKSPACE_ID);
+    assert_not_on_workspace!(harness.world(), 100, EXT_WORKSPACE_ID);
+    harness
+        .mock_state
+        .update_window(0, |window| window.workspace_id = EXT_WORKSPACE_ID);
+    harness
+        .mock_state
+        .update_window(100, |window| window.workspace_id = TEST_WORKSPACE_ID);
+    harness.advance(Duration::from_secs(1));
+    assert_on_workspace!(harness.world(), 0, EXT_WORKSPACE_ID);
+    assert_on_workspace!(harness.world(), 100, TEST_WORKSPACE_ID);
+}
+
+#[test]
+fn test_supplementary_allows_normal_laptop_scrolling_when_alone() {
+    let config: Config = (
+        MainOptions {
+            supplementary_display: Some(TEST_DISPLAY_ID),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    TestHarness::new().with_config(config).with_windows(4)
+        .on_iteration(1, |world, _| {
+            crate::assert_focused!(world, 3);
+            assert_eq!(world.query_filtered::<Entity, With<crate::ecs::supplementary::SupplementaryDisplay>>().iter(world).count(), 0);
+            assert_on_workspace!(world, 0, TEST_WORKSPACE_ID);
+            assert_on_workspace!(world, 3, TEST_WORKSPACE_ID);
+        }).run(vec![Event::MenuOpened {window_id: 0}, Event::Command { command: Command::Window(Operation::Focus(Direction::Last)) }]);
+}
+
+#[test]
+fn test_builtin_supplementary_evicts_extras_and_releases_role_after_unplug() {
+    let mut harness = TestHarness::new()
+        .with_windows(2)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-800, 0, 0, 600),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-750, 20, -350, 600);
+        })
+        .with_workspace_window(101, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-350, 20, 0, 600);
+        });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    let (_, mut display) = world
+        .query::<(Entity, &mut Display)>()
+        .iter_mut(world)
+        .find(|(_, display)| display.id() == EXT_DISPLAY_ID)
+        .unwrap();
+    display.set_built_in(true);
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    let members = world
+        .query::<&LayoutStrip>()
+        .iter(world)
+        .filter(|strip| strip.id() == EXT_WORKSPACE_ID)
+        .flat_map(LayoutStrip::all_windows)
+        .collect::<Vec<_>>();
+    assert_eq!(members.len(), 1);
+    let occupant = members[0];
+    let before = world.get::<Window>(occupant).unwrap().frame().width();
+    harness.mock_state.remove_display(TEST_DISPLAY_ID);
+    harness.world().write_message(Event::DisplayRemoved {
+        display_id: TEST_DISPLAY_ID,
+    });
+    harness.advance(Duration::from_secs(3));
+    assert!(
+        harness
+            .world()
+            .get::<crate::ecs::supplementary::SupplementaryWindow>(occupant)
+            .is_none()
+    );
+    assert!(
+        harness
+            .world()
+            .get::<Window>(occupant)
+            .unwrap()
+            .frame()
+            .width()
+            < before
+    );
+    assert_eq!(
+        harness
+            .world()
+            .query_filtered::<Entity, With<crate::ecs::supplementary::SupplementaryDisplay>>()
+            .iter(harness.world())
+            .count(),
+        0
+    );
+}

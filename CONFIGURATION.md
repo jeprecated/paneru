@@ -32,6 +32,7 @@ General behavior settings for the window manager.
 | `auto_center` | Boolean | `false` | Automatically center the focused window on the screen when switching focus. |
 | `sliver_height` | Float (0.1–1.0) | `1.0` | Vertical ratio of off-screen windows kept visible to prevent macOS from relocating them. |
 | `sliver_width` | Integer (px) | `5` | Horizontal width of off-screen windows kept visible. |
+| `supplementary_display` | Integer (display ID) | Built-in display | Choose the supplementary display explicitly. The role only applies while another display is connected. |
 | `menubar_height` | Integer (px) | *Auto* | Manually override the detected macOS menubar height. |
 | `window_hidden_ratio` | Float (0.0–1.0) | `0.0` | How much of a window can be hidden before it's forced into view on focus change. `0.0` = eager, `1.0` = lazy. |
 | `window_resize_cycle` | Boolean | `true` | If disabled, `window_resize` and `window_shrink` (and their `window_vertical_*` counterparts) stop at the largest/smallest preset instead of cycling back. |
@@ -240,6 +241,7 @@ https://github.com/karinushka/paneru/blob/3790b01f8d65df5d9000142db7cf25f9270dcc
 | `quit` | Exit Paneru. |
 | `restart` | Restart the Paneru service (`paneru restart`). |
 | `reload` | Rescan windows and displays and realign existing layouts in place (`paneru reload`). |
+| `display_supplementary` | Send the focused main-display window to the supplementary display, swapping its occupant into the original column slot. Focus stays on the main display when possible. |
 
 **Example:**
 ```toml
@@ -249,13 +251,27 @@ window_resize = ["alt - r", "ctrl - r"]
 reload = "cmd + ctrl + alt - r"
 ```
 
-### Multiple displays
+### Supplementary displays
+
+When another display is connected, the built-in laptop display automatically
+holds one window filling its usable desktop area. Extra laptop windows move to
+the largest main display. The main display keeps its independent scrolling
+strip. If the laptop is the only display, it returns to normal scrolling.
+Set `supplementary_display` to a native display ID to choose a different screen.
+
+Send with **Send / Swap Window to Laptop**, a binding for `display_supplementary`,
+or `paneru send-cmd display supplementary`. Sending swaps the laptop occupant
+into the sender's exact column/stack slot, preserves that slot's size, and keeps
+focus on the main display when possible. The supplementary display remains
+fully interactive, with scrolling and virtual-row navigation disabled.
 
 Paneru controls native windows through Accessibility and cannot clip them at a
 display boundary like Niri's compositor. Overflowing main-display windows stay
 inside their own display while their logical columns scroll; background windows
 can overlap. A window wider or taller than its display cannot fit inside it.
 Hidden virtual rows use exposed-edge parking to retain their display ownership.
+The supplementary window fills the usable area, preserving the menu bar and
+Dock rather than creating a native fullscreen Space.
 
 ### Virtual workspaces (Experimental)
 

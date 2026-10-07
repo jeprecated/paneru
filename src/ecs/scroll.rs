@@ -72,9 +72,11 @@ impl Plugin for ScrollEventsPlugin {
             Update,
             (
                 step_swipe_gesture
+                    .run_if(super::supplementary::scrolling_display)
                     .run_if(mission_control_inactive)
                     .run_if(on_message::<InputEvent>),
                 vertical_swipe_gesture
+                    .run_if(super::supplementary::scrolling_display)
                     .run_if(mission_control_inactive)
                     .run_if(on_message::<InputEvent>),
                 (
@@ -87,7 +89,8 @@ impl Plugin for ScrollEventsPlugin {
                     apply_scrolling_constraints,
                     swiping_timeout,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(super::supplementary::scrolling_display),
             ),
         );
     }

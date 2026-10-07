@@ -12,7 +12,7 @@ use objc2_core_foundation::{
     CGPoint, CGRect, CGSize, kCFBooleanTrue,
 };
 use objc2_core_graphics::{
-    CGAssociateMouseAndMouseCursorPosition, CGDirectDisplayID, CGDisplayBounds,
+    CGAssociateMouseAndMouseCursorPosition, CGDirectDisplayID, CGDisplayBounds, CGDisplayIsBuiltin,
     CGGetActiveDisplayList, CGWarpMouseCursorPosition, CGWindowListCopyWindowInfo,
     CGWindowListOption, kCGNullWindowID, kCGWindowNumber,
 };
@@ -387,10 +387,10 @@ impl WindowManagerApi for WindowManagerOS {
                     .and_then(|uuid| self.display_space_list(uuid.as_ref()))
                     .ok()?;
 
-                Some((
-                    Display::new(id, irect_from(bounds), menubar_height.cast_signed()),
-                    workspaces,
-                ))
+                let mut display =
+                    Display::new(id, irect_from(bounds), menubar_height.cast_signed());
+                display.set_built_in(CGDisplayIsBuiltin(id));
+                Some((display, workspaces))
             })
             .collect()
     }

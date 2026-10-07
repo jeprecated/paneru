@@ -49,6 +49,7 @@ pub fn parse_command(argv: &[&str]) -> Result<Command> {
         "quit" => Command::Quit,
         "restart" => Command::Restart,
         "reload" => Command::Reload,
+        "display" if argv == ["display", "supplementary"] => Command::DisplaySupplementary,
         _ => return Err(ParseError::new(format!("unhandled command '{argv:?}'"))),
     })
 }
@@ -169,6 +170,7 @@ impl Command {
             Command::Quit => vec!["quit".to_string()],
             Command::Restart => vec!["restart".to_string()],
             Command::Reload => vec!["reload".to_string()],
+            Command::DisplaySupplementary => vec!["display".into(), "supplementary".into()],
             Command::PrintState => vec!["printstate".to_string()],
             Command::Lua(_) | Command::Layout(_) => return None,
         };
@@ -293,6 +295,7 @@ mod tests {
             Command::Reload,
             Command::PrintState,
             Command::Mouse(MouseMove::ToNextDisplay),
+            Command::DisplaySupplementary,
         ] {
             assert_eq!(
                 format!("{:?}", round_trip(&command)),

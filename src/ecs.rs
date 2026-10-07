@@ -52,6 +52,7 @@ pub(crate) mod restore;
 pub mod script_state;
 pub mod scroll;
 pub mod state;
+pub(crate) mod supplementary;
 pub(crate) mod systems;
 mod triggers;
 pub(crate) mod window_geometry;
@@ -76,6 +77,7 @@ pub fn register_systems(app: &mut bevy::app::App) {
     const APP_OBSERVABILITY_CHECK_FREQ: Duration = Duration::from_millis(200);
     window_geometry::register(app);
     reload::register(app);
+    supplementary::register(app);
 
     let not_swiping = |scrolling: Query<&Scrolling, With<ActiveWorkspaceMarker>>| {
         scrolling

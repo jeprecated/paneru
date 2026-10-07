@@ -314,4 +314,6 @@ pub enum Command {
     Layout(Vec<crate::types::windowset::LayoutOp>),
     /// Rescan displays and windows and realign the existing layouts in place.
     Reload,
+    /// Send the focused window to the supplementary display, swapping its occupant.
+    DisplaySupplementary,
 }

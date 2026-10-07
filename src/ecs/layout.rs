@@ -524,6 +524,47 @@ impl LayoutStrip {
         self.columns.append(&mut other.columns);
     }
 
+    /// Replace one window without changing its column, stack or tab position.
+    pub(crate) fn replace_window(&mut self, from: Entity, to: Entity) {
+        for column in &mut self.columns {
+            match column {
+                Column::Single(entity) | Column::Fullscren(entity) => {
+                    if *entity == from {
+                        *entity = to;
+                    }
+                }
+                Column::Tabs(tabs) => {
+                    for entity in tabs {
+                        if *entity == from {
+                            *entity = to;
+                        }
+                    }
+                }
+                Column::Stack(items) => {
+                    for item in items {
+                        match item {
+                            StackItem::Single(entity) => {
+                                if *entity == from {
+                                    *entity = to;
+                                }
+                            }
+                            StackItem::Tabs(tabs) => {
+                                for entity in tabs {
+                                    if *entity == from {
+                                        *entity = to;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if self.tabbed_stacks.remove(&from) {
+            self.tabbed_stacks.insert(to);
+        }
+    }
+
     pub fn append_tab_group(&mut self, entities: &[Entity]) {
         let group = dedup_entities(entities);
         if group.is_empty() {

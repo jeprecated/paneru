@@ -104,6 +104,11 @@ define_class!(
         fn reload_windows(&self, _: &NSMenuItem) {
             self.send_command(Command::Reload);
         }
+
+        #[unsafe(method(sendToSupplementary:))]
+        fn send_to_supplementary(&self, _: &NSMenuItem) {
+            self.send_command(Command::DisplaySupplementary);
+        }
     }
 );
 
@@ -232,7 +237,6 @@ impl MenuBarManager {
         if self.configured_widths != widths {
             self.rebuild_menu(&widths);
         }
-
         let enablement = window_menu_enablement(has_focused_window, focused_width_ratio);
         for item in &self.managed_window_items {
             item.setEnabled(enablement.managed_actions);
@@ -269,7 +273,7 @@ impl MenuBarManager {
         self.manage_item = None;
         self.copy_rule_item = None;
 
-        let status = self.add_item("Paneru — Running", None);
+        let status = self.add_item(&format!("Paneru — {}", crate::VERSION_STRING), None);
         status.setEnabled(false);
         self.menu.addItem(&NSMenuItem::separatorItem(self.mtm));
 
@@ -293,6 +297,11 @@ impl MenuBarManager {
 
         self.menu.addItem(&NSMenuItem::separatorItem(self.mtm));
         self.add_item("Reload Windows and Displays", Some(sel!(reloadWindows:)));
+        let supplementary = self.add_item(
+            "Send / Swap Window to Laptop",
+            Some(sel!(sendToSupplementary:)),
+        );
+        self.managed_window_items.push(supplementary);
         self.add_item("Quit Paneru", Some(sel!(quitPaneru:)));
         self.configured_widths = widths.to_vec();
     }

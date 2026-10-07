@@ -118,7 +118,9 @@ impl Plugin for FocusEventsPlugin {
         app.add_systems(
             PostUpdate,
             (
-                autocenter_window_on_focus.after(super::systems::animate_resize_entities),
+                autocenter_window_on_focus
+                    .after(super::systems::animate_resize_entities)
+                    .run_if(super::supplementary::scrolling_display),
                 clear_pending_focus_layout.after(autocenter_window_on_focus),
                 // Bevy must apply the deferred centering commands before
                 // the pointer reads the window's destination.

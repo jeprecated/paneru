@@ -1253,6 +1253,8 @@ pub struct MainOptions {
     /// Width of off-screen window slivers in pixels.
     /// Default: 5 pixels.
     pub sliver_width: Option<u16>,
+    /// Native display id to use as supplementary; defaults to the built-in screen.
+    pub supplementary_display: Option<u32>,
     /// Legacy top-level padding (deprecated; use `[padding]`).
     pub padding_top: Option<u16>,
     pub padding_bottom: Option<u16>,
