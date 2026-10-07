@@ -49,7 +49,23 @@ pub fn parse_command(argv: &[&str]) -> Result<Command> {
         "quit" => Command::Quit,
         "restart" => Command::Restart,
         "reload" => Command::Reload,
-        "display" if argv == ["display", "supplementary"] => Command::DisplaySupplementary,
+        "display" => match (argv.get(1), argv.get(2)) {
+            (Some(&"next"), None) if argv.len() == 2 => Command::DisplayNext,
+            (Some(&"supplementary"), None) if argv.len() == 2 => Command::DisplaySupplementary,
+            (Some(&"focus"), Some(direction)) if argv.len() == 3 => {
+                let direction = Direction::parse(direction)?;
+                if !matches!(
+                    direction,
+                    Direction::North | Direction::South | Direction::East | Direction::West
+                ) {
+                    return Err(ParseError::new(
+                        "display focus requires a cardinal direction",
+                    ));
+                }
+                Command::DisplayFocus(direction)
+            }
+            _ => return Err(ParseError::new("invalid display command")),
+        },
         _ => return Err(ParseError::new(format!("unhandled command '{argv:?}'"))),
     })
 }
@@ -170,7 +186,11 @@ impl Command {
             Command::Quit => vec!["quit".to_string()],
             Command::Restart => vec!["restart".to_string()],
             Command::Reload => vec!["reload".to_string()],
+            Command::DisplayFocus(direction) => {
+                vec!["display".into(), "focus".into(), direction.token()]
+            }
             Command::DisplaySupplementary => vec!["display".into(), "supplementary".into()],
+            Command::DisplayNext => vec!["display".into(), "next".into()],
             Command::PrintState => vec!["printstate".to_string()],
             Command::Lua(_) | Command::Layout(_) => return None,
         };
@@ -296,6 +316,11 @@ mod tests {
             Command::PrintState,
             Command::Mouse(MouseMove::ToNextDisplay),
             Command::DisplaySupplementary,
+            Command::DisplayNext,
+            Command::DisplayFocus(Direction::West),
+            Command::DisplayFocus(Direction::East),
+            Command::DisplayFocus(Direction::North),
+            Command::DisplayFocus(Direction::South),
         ] {
             assert_eq!(
                 format!("{:?}", round_trip(&command)),

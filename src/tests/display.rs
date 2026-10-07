@@ -1571,3 +1571,94 @@ fn test_builtin_supplementary_evicts_extras_and_releases_role_after_unplug() {
         0
     );
 }
+
+#[test]
+fn test_screen_cycle_restores_focus_and_offsets_across_three_displays() {
+    let mut harness = TestHarness::new()
+        .with_windows(3)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-1920, 0, 0, 1200),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_display(
+            EXT_DISPLAY_ID + 1,
+            IRect::new(0, -1200, 1920, 0),
+            vec![EXT_WORKSPACE_ID + 1],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-1600, 20, -1200, 1000);
+        })
+        .with_workspace_window(200, EXT_WORKSPACE_ID + 1, |window| {
+            window.frame = IRect::new(0, -1100, 400, -100);
+        });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Focus(Direction::Last)),
+    });
+    harness.advance(Duration::from_secs(1));
+    let offsets = |world: &mut World| {
+        world
+            .query::<(&LayoutStrip, &crate::ecs::Position)>()
+            .iter(world)
+            .map(|(strip, position)| (strip.id(), position.0))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    let before = offsets(harness.world());
+    for expected in [100, 200, 2, 100, 200, 2] {
+        harness.world().write_message(Event::Command {
+            command: Command::DisplayNext,
+        });
+        harness.advance(Duration::from_secs(1));
+        crate::assert_focused!(harness.world(), expected);
+        assert_eq!(offsets(harness.world()), before);
+    }
+}
+
+#[test]
+fn test_directional_screen_focus_preserves_each_strip_offset() {
+    let config: Config = (
+        MainOptions {
+            auto_center: Some(true),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_windows(3)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-1920, 0, 0, 1200),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-1600, 20, -1200, 1020);
+        });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Focus(Direction::Last)),
+    });
+    harness.advance(Duration::from_secs(1));
+    let offsets = |world: &mut World| {
+        world
+            .query::<(&LayoutStrip, &crate::ecs::Position)>()
+            .iter(world)
+            .map(|(strip, position)| (strip.id(), position.0))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    let before = offsets(harness.world());
+    harness.world().write_message(Event::Command {
+        command: Command::DisplayFocus(Direction::West),
+    });
+    harness.advance(Duration::from_secs(1));
+    crate::assert_focused!(harness.world(), 100);
+    assert_eq!(offsets(harness.world()), before);
+    harness.world().write_message(Event::Command {
+        command: Command::DisplayFocus(Direction::East),
+    });
+    harness.advance(Duration::from_secs(1));
+    crate::assert_focused!(harness.world(), 2);
+    assert_eq!(offsets(harness.world()), before);
+}

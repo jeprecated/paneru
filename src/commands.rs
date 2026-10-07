@@ -101,6 +101,86 @@ pub fn register_commands(app: &mut bevy::app::App) {
     // once it knows whether a Lua script took over the configuration.
     app.init_resource::<SnippetDialect>();
     app.add_systems(PreUpdate, (copy_window_rule, toggle_tabbed_display_handler));
+    app.add_systems(PreUpdate, focus_display);
+}
+
+#[instrument(level = Level::DEBUG, skip_all)]
+#[allow(clippy::too_many_arguments)]
+fn focus_display(
+    mut messages: MessageReader<Event>,
+    active: ActiveDisplay,
+    displays: Query<(Entity, &Display)>,
+    strips: Query<(Entity, &LayoutStrip, &ChildOf, Has<SelectedVirtualMarker>)>,
+    history: Res<FocusHistory>,
+    windows: Query<&Window>,
+    wm: Res<WindowManager>,
+    mut commands: Commands,
+) {
+    let Some(direction) = messages.read().find_map(|event| match event {
+        Event::Command {
+            command: Command::DisplayFocus(direction),
+        } => Some(Some(direction)),
+        Event::Command {
+            command: Command::DisplayNext,
+        } => Some(None),
+        _ => None,
+    }) else {
+        return;
+    };
+    let center = active.bounds().center();
+    let target = if let Some(direction) = direction {
+        displays
+            .iter()
+            .filter(|(_, display)| display.id() != active.id())
+            .filter_map(|(entity, display)| {
+                let delta = display.bounds().center() - center;
+                let (along, across) = match direction {
+                    Direction::West => (-delta.x, delta.y),
+                    Direction::East => (delta.x, delta.y),
+                    Direction::North => (-delta.y, delta.x),
+                    Direction::South => (delta.y, delta.x),
+                    _ => return None,
+                };
+                (along > 0).then_some((entity, display, i64::from(along) + i64::from(across).abs()))
+            })
+            .min_by_key(|(entity, _, distance)| (*distance, entity.to_bits()))
+            .map(|(entity, display, _)| (entity, display))
+    } else {
+        displays
+            .iter()
+            .filter(|(_, display)| display.id() != active.id())
+            .min_by_key(|(_, display)| (display.id() <= active.id(), display.id()))
+    };
+    let Some((display_entity, display)) = target else {
+        return;
+    };
+    let Ok(space) = wm.active_display_space(display.id()) else {
+        return;
+    };
+    let Some((strip_entity, strip, _, _)) = strips
+        .iter()
+        .filter(|(_, strip, child, _)| strip.id() == space && child.parent() == display_entity)
+        .min_by_key(|(_, strip, _, selected)| (!selected, strip.virtual_index))
+    else {
+        return;
+    };
+    commands.entity(display_entity).insert(ActiveDisplayMarker);
+    commands.entity(strip_entity).insert(ActiveWorkspaceMarker);
+    let remembered = history
+        .last_managed(space)
+        .filter(|entity| strip.contains(*entity));
+    let target = remembered.or_else(|| {
+        strip
+            .all_windows()
+            .into_iter()
+            .find(|entity| windows.contains(*entity))
+    });
+    if let Some(entity) = target {
+        crate::ecs::workspace::spawn_restore_focus_guard(entity, &mut commands);
+        commands.focus_entity(entity, true);
+    } else {
+        wm.warp_mouse(display.bounds().center());
+    }
 }
 
 pub fn filter_window_operations<'a, F: Fn(&Operation) -> bool>(
