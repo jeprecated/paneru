@@ -536,6 +536,34 @@ impl Config {
             .or(config.options.swipe_gesture_fingers)
     }
 
+    pub fn swipe_gesture_window_step(&self) -> bool {
+        self.inner()
+            .swipe
+            .as_ref()
+            .and_then(|swipe| swipe.gesture.as_ref())
+            .and_then(|gesture| gesture.window_step)
+            .unwrap_or(false)
+    }
+
+    // Physical finger counts are far below f64's exact integer limit.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn swipe_gesture_step_threshold(&self) -> f64 {
+        self.inner()
+            .swipe
+            .as_ref()
+            .and_then(|swipe| swipe.gesture.as_ref())
+            .and_then(|gesture| gesture.step_threshold)
+            .filter(|threshold| threshold.is_finite())
+            .map_or_else(
+                // Preserve the original summed-delta threshold when omitted.
+                || {
+                    0.15 / self.swipe_sensitivity()
+                        / self.swipe_gesture_fingers().unwrap_or(3).max(1) as f64
+                },
+                |threshold| threshold.clamp(0.001, 1.0),
+            )
+    }
+
     pub fn swipe_vertical(&self) -> bool {
         let config = self.inner();
         config

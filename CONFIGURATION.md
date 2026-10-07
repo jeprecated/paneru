@@ -71,10 +71,33 @@ Configure trackpad gestures and scroll-wheel window sliding.
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `fingers_count` | Integer | *None* | Number of fingers for the swipe gesture. Set to 3 or more to enable. |
+| `window_step` | Boolean | `false` | Focus the adjacent column once per horizontal swipe instead of scrolling the strip. Vertical swipes switch one workspace. Lift your fingers before the next action. |
+| `step_threshold` | Float (0.001–1.0) | Derived from sensitivity | Minimum average finger travel for `window_step`, as a fraction of trackpad width (horizontal) or height (vertical). Lower values trigger sooner. `0.02` means 2%. Independent of `swipe.sensitivity` when set; values are clamped to the range. |
 | `direction` | String | `"Natural"` | Direction of movement: `"Natural"` or `"Reversed"`. |
 | `vertical` | Boolean | `true` | Interpret the vertical gestures with `fingers_count` or ignore them. Enabling this allows using vertical swipe gestures to change virtual desktops. |
 
 When `fingers_count` is omitted or set below 3, Paneru does not intercept native macOS gestures. If macOS uses three-finger horizontal swipes for Spaces, prefer `[swipe.scroll]` with a modifier or configure a different finger count.
+
+For three-finger navigation without a modifier key:
+
+```toml
+[swipe.gesture]
+fingers_count = 3
+window_step = true
+step_threshold = 0.02
+vertical = true
+```
+
+With the default natural direction, swiping your fingers left focuses the column
+to the right, and swiping up switches to the workspace below. Set `direction =
+"Reversed"` to reverse both axes. Small movements below the gesture threshold do
+nothing; holding or continuing the same swipe does not repeat the action.
+When `step_threshold` is omitted, the original threshold is retained
+(`0.15 / sensitivity / fingers_count`, about 14.3% with three fingers and default
+sensitivity). In macOS System Settings → Trackpad → More Gestures, move Mission
+Control and Swipe between full-screen applications to four fingers, and keep
+App Exposé off or on four fingers, to avoid native three-finger actions competing
+with Paneru.
 
 ### `[swipe.scroll]`
 | Option | Type | Default | Description |
