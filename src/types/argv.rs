@@ -51,6 +51,7 @@ pub fn parse_command(argv: &[&str]) -> Result<Command> {
         "showmenu" if argv.len() == 1 => Command::MenuBar(true),
         "hidemenu" if argv.len() == 1 => Command::MenuBar(false),
         "reload" => Command::Reload,
+        "display" if argv == ["display", "supplementary"] => Command::DisplaySupplementary,
         _ => return Err(ParseError::new(format!("unhandled command '{argv:?}'"))),
     })
 }
@@ -171,6 +172,7 @@ impl Command {
             Command::Quit => vec!["quit".to_string()],
             Command::Restart => vec!["restart".to_string()],
             Command::Reload => vec!["reload".to_string()],
+            Command::DisplaySupplementary => vec!["display".into(), "supplementary".into()],
             Command::PrintState => vec!["printstate".to_string()],
             Command::MenuBar(enabled) => {
                 vec![if *enabled { "showmenu" } else { "hidemenu" }.to_string()]
@@ -300,6 +302,7 @@ mod tests {
             Command::MenuBar(true),
             Command::MenuBar(false),
             Command::Mouse(MouseMove::ToNextDisplay),
+            Command::DisplaySupplementary,
         ] {
             assert_eq!(
                 format!("{:?}", round_trip(&command)),

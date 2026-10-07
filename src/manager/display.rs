@@ -25,6 +25,7 @@ pub struct Display {
     /// Optional config override for the menubar height.
     menubar_height_override: Option<i32>,
     notch_height: i32,
+    built_in: bool,
 }
 
 impl Display {
@@ -47,6 +48,7 @@ impl Display {
             menubar_height,
             menubar_height_override: None,
             notch_height: 0,
+            built_in: false,
         }
     }
 
@@ -100,6 +102,14 @@ impl Display {
     /// The `CGDirectDisplayID` of the display.
     pub fn id(&self) -> CGDirectDisplayID {
         self.id
+    }
+
+    pub fn is_built_in(&self) -> bool {
+        self.built_in
+    }
+
+    pub fn set_built_in(&mut self, built_in: bool) {
+        self.built_in = built_in;
     }
 
     pub fn locate_dock(&self, visible_frame: &IRect) -> DockPosition {

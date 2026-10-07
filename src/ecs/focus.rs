@@ -132,7 +132,8 @@ impl Plugin for FocusEventsPlugin {
                 autocenter_window_on_focus
                     .in_set(super::UpdateSet::Layout)
                     .after(super::layout::layout_strip_changed)
-                    .before(super::layout::reshuffle_layout_strip),
+                    .before(super::layout::reshuffle_layout_strip)
+                    .run_if(super::supplementary::scrolling_display),
             ),
         );
         app.add_systems(

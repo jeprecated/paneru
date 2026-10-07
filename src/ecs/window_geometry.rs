@@ -13,8 +13,26 @@ pub(crate) struct RecentWindowMove {
     pub until: std::time::Duration,
 }
 
+/// `WindowServer` can publish the old Space while a cross-display move settles.
+#[derive(Component)]
+pub(crate) struct RecentDisplayTransfer {
+    pub until: std::time::Duration,
+}
+
 pub(crate) fn register(app: &mut App) {
-    app.add_systems(PostUpdate, expire_moves);
+    app.add_systems(PostUpdate, (expire_moves, expire_transfers));
+}
+
+fn expire_transfers(
+    transfers: Populated<(Entity, &RecentDisplayTransfer)>,
+    time: Res<Time>,
+    mut commands: Commands,
+) {
+    for (entity, transfer) in &transfers {
+        if time.elapsed() >= transfer.until {
+            commands.entity(entity).remove::<RecentDisplayTransfer>();
+        }
+    }
 }
 
 fn expire_moves(

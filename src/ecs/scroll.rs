@@ -199,6 +199,7 @@ impl Plugin for ScrollEventsPlugin {
                 .in_set(PreUpdateSet::Demux)
                 .after(super::systems::demux_input_events)
                 .run_if(mission_control_inactive)
+                .run_if(super::supplementary::scrolling_display)
                 .run_if(paging_enabled)
                 .run_if(on_message::<InputEvent>.or_else(paging_active)),
         );
@@ -210,9 +211,11 @@ impl Plugin for ScrollEventsPlugin {
             Update,
             (
                 step_swipe_gesture
+                    .run_if(super::supplementary::scrolling_display)
                     .run_if(mission_control_inactive)
                     .run_if(on_message::<InputEvent>),
                 vertical_swipe_gesture
+                    .run_if(super::supplementary::scrolling_display)
                     .run_if(mission_control_inactive)
                     .run_if(on_message::<InputEvent>),
                 (
@@ -225,9 +228,9 @@ impl Plugin for ScrollEventsPlugin {
                     apply_scrolling_constraints,
                     swiping_timeout,
                 )
-                    .chain(),
-            )
-                .in_set(UpdateSet::Input),
+                    .chain()
+                    .run_if(super::supplementary::scrolling_display),
+            ).in_set(UpdateSet::Input),
         );
     }
 }

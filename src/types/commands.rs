@@ -316,4 +316,6 @@ pub enum Command {
     MenuBar(bool),
     /// Rescan displays and windows and realign the existing layouts in place.
     Reload,
+    /// Send the focused window to the supplementary display, swapping its occupant.
+    DisplaySupplementary,
 }
