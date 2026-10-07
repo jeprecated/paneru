@@ -123,6 +123,11 @@ define_class!(
             _ = self.ivars().events.send(msg);
         }
 
+        #[unsafe(method(willSleep:))]
+        fn system_will_sleep(&self, _: &NSObject) {
+            _ = self.ivars().events.send(Event::SystemWillSleep);
+        }
+
         /// Called when the system wakes from sleep.
         ///
         /// # Arguments
@@ -288,6 +293,7 @@ impl WorkspaceObserver {
                 sel!(didUnhideApplication:),
                 "NSWorkspaceDidUnhideApplicationNotification",
             ),
+            (sel!(willSleep:), "NSWorkspaceWillSleepNotification"),
             (sel!(didWake:), "NSWorkspaceDidWakeNotification"),
         ];
         let shared_ws = NSWorkspace::sharedWorkspace();

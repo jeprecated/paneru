@@ -51,6 +51,7 @@ pub(crate) mod reload;
 pub(crate) mod restore;
 pub mod script_state;
 pub mod scroll;
+pub(crate) mod sleep;
 pub mod state;
 pub(crate) mod supplementary;
 pub(crate) mod systems;
@@ -75,6 +76,7 @@ pub fn register_systems(app: &mut bevy::app::App) {
     const CLOSED_WINDOW_CHECK_FREQ: Duration = Duration::from_secs(1);
     const LOW_POWER_MODE_CHECK: Duration = Duration::from_mins(1);
     const APP_OBSERVABILITY_CHECK_FREQ: Duration = Duration::from_millis(200);
+    sleep::register(app);
     window_geometry::register(app);
     reload::register(app);
     supplementary::register(app);
@@ -133,7 +135,9 @@ pub fn register_systems(app: &mut bevy::app::App) {
             // Read creation notifications in the same frame that pumps them.
             // Otherwise an idle pump can wait up to its next timeout before
             // the first resize of a newly visible window.
-            systems::window_creation_event.after(systems::pump_events),
+            systems::window_creation_event
+                .after(systems::pump_events)
+                .in_set(sleep::LayoutActivity),
             systems::demux_input_events.after(systems::pump_events),
         ),
     );
@@ -183,7 +187,8 @@ pub fn register_systems(app: &mut bevy::app::App) {
             state::cleanup_on_exit,
             script_state::periodic_script_state_save.run_if(on_timer(Duration::from_mins(5))),
             script_state::script_state_cleanup_on_exit,
-        ),
+        )
+            .in_set(sleep::LayoutActivity),
     );
     app.add_systems(
         PostUpdate,
@@ -210,7 +215,8 @@ pub fn register_systems(app: &mut bevy::app::App) {
                 .chain(),
             crate::menubar::update_menu_bar
                 .run_if(vw_indicator_dirty.or_eager(strip_count_changed)),
-        ),
+        )
+            .in_set(sleep::LayoutActivity),
     );
 }
 
@@ -229,7 +235,8 @@ pub fn register_triggers(app: &mut bevy::app::App) {
             triggers::refresh_configuration_trigger,
             triggers::theme_change_trigger,
             triggers::window_resize_verifier,
-        ),
+        )
+            .in_set(sleep::LayoutActivity),
     );
     app.add_observer(triggers::window_unmanaged_trigger)
         .add_observer(triggers::window_managed_trigger)

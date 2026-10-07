@@ -91,7 +91,8 @@ impl Plugin for ScrollEventsPlugin {
                 )
                     .chain()
                     .run_if(super::supplementary::scrolling_display),
-            ),
+            )
+                .in_set(super::sleep::LayoutActivity),
         );
     }
 }

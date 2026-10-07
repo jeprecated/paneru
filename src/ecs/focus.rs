@@ -98,6 +98,12 @@ impl FocusHistory {
         }
     }
 
+    pub(crate) fn remap_workspace(&mut self, old: WorkspaceId, new: WorkspaceId) {
+        if let Some(memory) = self.by_workspace.remove(&old) {
+            self.by_workspace.insert(new, memory);
+        }
+    }
+
     pub fn forget_workspace(&mut self, workspace: WorkspaceId) {
         self.by_workspace.remove(&workspace);
     }
@@ -113,7 +119,8 @@ impl Plugin for FocusEventsPlugin {
             (
                 detect_focus_rejection.before(super::systems::timeout_ticker),
                 fix_window_size_on_focus,
-            ),
+            )
+                .in_set(super::sleep::LayoutActivity),
         );
         app.add_systems(
             PostUpdate,
@@ -128,7 +135,8 @@ impl Plugin for FocusEventsPlugin {
                 recover_lost_focus.run_if(on_timer(Duration::from_millis(
                     REFRESH_WINDOW_CHECK_FREQ_MS,
                 ))),
-            ),
+            )
+                .in_set(super::sleep::LayoutActivity),
         );
         app.add_observer(dim_remove_window_trigger)
             .add_observer(dim_window_trigger)
@@ -236,10 +244,16 @@ fn shares_a_tab_group(
 #[instrument(level = Level::DEBUG, skip_all, fields(focused))]
 fn fix_window_size_on_focus(
     focused: Single<Entity, Added<FocusedMarker>>,
-    mut windows: Query<(&mut Window, &mut Bounds, Has<ResizeMarker>)>,
+    mut windows: Query<(
+        &mut Window,
+        &mut Bounds,
+        Has<ResizeMarker>,
+        Has<super::window_geometry::RecentDisplayTransfer>,
+    )>,
 ) {
-    if let Ok((mut window, mut bounds, resizing)) = windows.get_mut(*focused)
+    if let Ok((mut window, mut bounds, resizing, transferring)) = windows.get_mut(*focused)
         && !resizing
+        && !transferring
         && let Ok(frame) = window.update_frame()
         && frame.size() != bounds.0
     {
