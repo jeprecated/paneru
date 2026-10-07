@@ -316,6 +316,10 @@ pub enum Command {
     MenuBar(bool),
     /// Rescan displays and windows and realign the existing layouts in place.
     Reload,
+    /// Focus the remembered window on the display in this physical direction.
+    DisplayFocus(Direction),
     /// Send the focused window to the supplementary display, swapping its occupant.
     DisplaySupplementary,
+    /// Cycle display focus by native display id, restoring remembered focus.
+    DisplayNext,
 }
