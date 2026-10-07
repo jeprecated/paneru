@@ -50,6 +50,7 @@ pub fn parse_command(argv: &[&str]) -> Result<Command> {
         "restart" => Command::Restart,
         "showmenu" if argv.len() == 1 => Command::MenuBar(true),
         "hidemenu" if argv.len() == 1 => Command::MenuBar(false),
+        "reload" => Command::Reload,
         _ => return Err(ParseError::new(format!("unhandled command '{argv:?}'"))),
     })
 }
@@ -169,6 +170,7 @@ impl Command {
             }
             Command::Quit => vec!["quit".to_string()],
             Command::Restart => vec!["restart".to_string()],
+            Command::Reload => vec!["reload".to_string()],
             Command::PrintState => vec!["printstate".to_string()],
             Command::MenuBar(enabled) => {
                 vec![if *enabled { "showmenu" } else { "hidemenu" }.to_string()]
@@ -293,6 +295,7 @@ mod tests {
         for command in [
             Command::Quit,
             Command::Restart,
+            Command::Reload,
             Command::PrintState,
             Command::MenuBar(true),
             Command::MenuBar(false),

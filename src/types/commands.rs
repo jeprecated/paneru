@@ -314,4 +314,6 @@ pub enum Command {
     Layout(Vec<crate::types::windowset::LayoutOp>),
     /// Shows or hides the menu bar item and remembers the choice.
     MenuBar(bool),
+    /// Rescan displays and windows and realign the existing layouts in place.
+    Reload,
 }

@@ -214,6 +214,11 @@ define_class!(
         fn hide_menu_bar(&self, _: &NSMenuItem) {
             self.send_command(Command::MenuBar(false));
         }
+
+        #[unsafe(method(reloadWindows:))]
+        fn reload_windows(&self, _: &NSMenuItem) {
+            self.send_command(Command::Reload);
+        }
     }
 );
 
@@ -427,6 +432,7 @@ impl MenuBarManager {
         hide.setToolTip(Some(&NSString::from_str(
             "Show again with: paneru showmenu",
         )));
+        self.add_item("Reload Windows and Displays", Some(sel!(reloadWindows:)));
         self.add_item("Quit Paneru", Some(sel!(quitPaneru:)));
         self.configured_widths = widths.to_vec();
         self.current_enablement = None;

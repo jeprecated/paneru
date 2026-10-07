@@ -1381,6 +1381,7 @@ pub(super) fn apply_window_positions(
     window_manager: Res<WindowManager>,
     apps: Query<&Application>,
     initializing: Option<Res<Initializing>>,
+    reloading: Option<Res<super::reload::Reloading>>,
     restore: Option<Res<crate::ecs::restore::SessionRestore>>,
     restoration: Option<Res<PaneruState>>,
     mut ctx: WindowCtx,
@@ -1437,6 +1438,7 @@ pub(super) fn apply_window_positions(
             .any(|(_, strip, _, _)| strip.contains(entity));
         let mut on_hidden_space = false;
         if initializing.is_none()
+            && reloading.is_none()
             && !allready_inserted
             && let Some((target, is_active)) = home_strip(
                 window.id(),
@@ -1480,7 +1482,7 @@ pub(super) fn apply_window_positions(
 
         // During init, skip per-window reshuffles. finish_setup does a single
         // reshuffle after all windows are added.
-        if initializing.is_none() {
+        if initializing.is_none() && reloading.is_none() {
             if properties.dont_focus() {
                 if let Some((focus, prev)) = ctx.windows.focused() {
                     debug!(

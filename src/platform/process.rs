@@ -315,14 +315,7 @@ impl ProcessHandler {
 
         info!("Registering process_handler");
 
-        // Fake launch the existing processes.
-        let mut psn = ProcessSerialNumber::default();
-        while unsafe { GetNextProcess(&raw mut psn) }
-            .to_result(function_name!())
-            .is_ok()
-        {
-            self.process_handler(psn, ProcessEventApp::Launched);
-        }
+        self.rescan();
 
         let target = unsafe { GetApplicationEventTarget() };
         let event_class = u32::from_be_bytes(APPL_CLASS.as_bytes().try_into()?);
@@ -426,6 +419,16 @@ impl ProcessHandler {
     ///
     /// * `psn` - The `ProcessSerialNumber` of the process involved in the event.
     /// * `event` - The `ProcessEventApp` indicating the type of event (e.g., `Launched`, `Terminated`).
+    pub(crate) fn rescan(&mut self) {
+        let mut psn = ProcessSerialNumber::default();
+        while unsafe { GetNextProcess(&raw mut psn) }
+            .to_result(function_name!())
+            .is_ok()
+        {
+            self.process_handler(psn, ProcessEventApp::Launched);
+        }
+    }
+
     fn process_handler(&mut self, psn: ProcessSerialNumber, event: ProcessEventApp) {
         let _ = match event {
             ProcessEventApp::Launched => self.events.send(Event::ApplicationLaunched {
