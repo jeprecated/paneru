@@ -60,6 +60,8 @@ type MovableWindows<'w, 's> = Query<
         &'static Bounds,
         Option<&'static Unmanaged>,
         Has<RepositionMarker>,
+        Option<&'static super::display_edges::RecentWindowMove>,
+        Has<super::display_edges::DisplayConstrainedMarker>,
     ),
     Without<LayoutStrip>,
 >;
@@ -784,7 +786,7 @@ pub(crate) fn pump_events(
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
-pub(super) fn window_resized_update_frame(
+pub(crate) fn window_resized_update_frame(
     mut messages: MessageReader<Event>,
     mut windows: ResizableWindows,
     mut workspaces: Query<(&LayoutStrip, &mut Position)>,
@@ -821,12 +823,15 @@ pub(super) fn window_resized_update_frame(
             .is_some_and(|strip| strip.0.tabbed(entity));
 
         let old_frame = IRect::from_corners(position.0, position.0 + bounds.0);
-        if old_frame.size() != new_frame.size() {
-            if tabbed {
-                bounds.bypass_change_detection().0 = new_frame.size();
-            } else {
-                bounds.0 = new_frame.size();
-            }
+        if old_frame.size() == new_frame.size() {
+            // Some apps echo a move as AXWindowResized as well. There is no
+            // size change to anchor, so do not rebase the whole strip on it.
+            continue;
+        }
+        if tabbed {
+            bounds.bypass_change_detection().0 = new_frame.size();
+        } else {
+            bounds.0 = new_frame.size();
         }
 
         // If the window was resized, shift LayoutStrip slightly to avoid moving right corner.
@@ -863,15 +868,17 @@ pub(super) fn window_resized_update_frame(
 pub(crate) fn window_moved_update_frame(
     mut messages: MessageReader<Event>,
     mut windows: MovableWindows,
+    time: Res<Time>,
 ) {
     for event in messages.read() {
         let Event::WindowMoved { window_id } = event else {
             continue;
         };
 
-        let Some((mut window, mut position, bounds, unmanaged, repositioning)) = windows
-            .iter_mut()
-            .find(|window| window.0.id() == *window_id)
+        let Some((mut window, mut position, bounds, unmanaged, repositioning, recent, constrained)) =
+            windows
+                .iter_mut()
+                .find(|window| window.0.id() == *window_id)
         else {
             continue;
         };
@@ -887,6 +894,16 @@ pub(crate) fn window_moved_update_frame(
         let Ok(new_frame) = window.update_frame() else {
             continue;
         };
+
+        // The OS may clamp a snapped or parked frame and acknowledge it after
+        // our animation has finished. Preserve the logical scrolling position.
+        if constrained
+            || recent.is_some_and(|request| {
+                time.elapsed() < request.until && position.0 == request.origin
+            })
+        {
+            continue;
+        }
 
         let old_frame = IRect::from_corners(position.0, position.0 + bounds.0);
         if old_frame.min != new_frame.min {
@@ -1103,11 +1120,19 @@ pub(super) fn update_overlays(
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
-pub(super) fn commit_window_position(
-    mut moved_windows: Populated<(&mut Window, &Position), Changed<Position>>,
+pub(crate) fn commit_window_position(
+    mut moved_windows: Populated<(Entity, &mut Window, &Position), Changed<Position>>,
+    time: Res<Time>,
+    mut commands: Commands,
 ) {
-    for (mut window, position) in &mut moved_windows {
+    for (entity, mut window, position) in &mut moved_windows {
         window.reposition(position.0);
+        commands
+            .entity(entity)
+            .insert(super::display_edges::RecentWindowMove {
+                origin: position.0,
+                until: time.elapsed() + Duration::from_millis(150),
+            });
     }
 }
 
@@ -1137,7 +1162,7 @@ pub(super) fn verify_window_position(
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
-pub(super) fn commit_window_size(
+pub(crate) fn commit_window_size(
     strips: Query<(&LayoutStrip, &ChildOf)>,
     displays: Query<&Display>,
     mut resized_windows: Populated<

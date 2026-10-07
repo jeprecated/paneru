@@ -89,7 +89,8 @@ impl Plugin for WorkspaceEventsPlugin {
 
         app.add_systems(
             PreUpdate,
-            (switch_virtual_workspace_bind, move_virtual_workspace_bind),
+            (switch_virtual_workspace_bind, move_virtual_workspace_bind)
+                .run_if(super::supplementary::scrolling_display),
         );
         app.add_systems(
             PreUpdate,
@@ -145,7 +146,7 @@ pub(crate) struct RestoreFocusMarker {
 /// normal expose-reshuffle back.
 const RESTORE_FOCUS_GUARD_TIMEOUT: Duration = Duration::from_secs(2);
 
-fn spawn_restore_focus_guard(entity: Entity, commands: &mut Commands) {
+pub(crate) fn spawn_restore_focus_guard(entity: Entity, commands: &mut Commands) {
     let timeout = Timeout::new(RESTORE_FOCUS_GUARD_TIMEOUT, None, commands);
     commands.spawn((timeout, RestoreFocusMarker { entity }));
 }

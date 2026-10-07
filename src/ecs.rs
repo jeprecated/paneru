@@ -4,6 +4,7 @@ use std::time::Duration;
 use bevy::MinimalPlugins;
 use bevy::app::App as BevyApp;
 use bevy::app::{First, Last, PostUpdate, PreUpdate, Startup};
+use bevy::ecs::change_detection::DetectChanges;
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::ecs::lifecycle::RemovedComponents;
 use bevy::ecs::query::{Added, Changed, With};
@@ -41,6 +42,7 @@ use crate::overlay::{FlashMessageManager, OverlayManager};
 use crate::platform::{Modifiers, PlatformCallbacks, WinID, WorkspaceId};
 
 pub mod display;
+pub(crate) mod display_edges;
 pub mod focus;
 pub mod layout;
 #[cfg(feature = "lua")]
@@ -52,6 +54,7 @@ pub(crate) mod restore;
 pub mod script_state;
 pub mod scroll;
 pub mod state;
+pub(crate) mod supplementary;
 pub(crate) mod systems;
 mod triggers;
 pub mod workspace;
@@ -73,6 +76,8 @@ pub fn register_systems(app: &mut bevy::app::App) {
     const CLOSED_WINDOW_CHECK_FREQ: Duration = Duration::from_secs(1);
     const LOW_POWER_MODE_CHECK: Duration = Duration::from_mins(1);
     const APP_OBSERVABILITY_CHECK_FREQ: Duration = Duration::from_millis(200);
+    display_edges::register(app);
+    supplementary::register(app);
     reload::register(app);
 
     let not_swiping = |scrolling: Query<&Scrolling, With<ActiveWorkspaceMarker>>| {
@@ -94,11 +99,13 @@ pub fn register_systems(app: &mut bevy::app::App) {
         |strip_changed: Query<(), (With<ActiveWorkspaceMarker>, Changed<LayoutStrip>)>,
          focus_gained: Query<(), Added<FocusedMarker>>,
          workspace_changed: Query<(), Added<ActiveWorkspaceMarker>>,
-         focused_moved: Query<(), (With<FocusedMarker>, Changed<Position>)>| {
+         focused_moved: Query<(), (With<FocusedMarker>, Changed<Position>)>,
+         edge_mode: Option<Res<display_edges::DisplayEdges>>| {
             !strip_changed.is_empty()
                 || !focus_gained.is_empty()
                 || !workspace_changed.is_empty()
                 || !focused_moved.is_empty()
+                || edge_mode.is_some_and(|mode| mode.is_changed())
         };
     // The menu bar additionally shows how many virtual workspaces exist, so it
     // has to redraw when one is created or reaped, neither of which touches the

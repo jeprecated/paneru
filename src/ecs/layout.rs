@@ -13,6 +13,7 @@ use stdext::function_name;
 use tracing::{Level, instrument, trace};
 
 use crate::config::Config;
+use crate::ecs::display_edges::{DisplayConstrainedMarker, DisplayEdges};
 use crate::ecs::params::Windows;
 use crate::ecs::workspace::SnapStripMarker;
 use crate::ecs::{
@@ -23,6 +24,7 @@ use crate::ecs::{
 use crate::errors::{Error, Result};
 use crate::manager::{Display, Origin, Size, Window};
 use crate::platform::WorkspaceId;
+use crate::types::commands::DisplayEdgeMode;
 use crate::util::round_px;
 
 /// The floor every window in a column is packed against. Heights that would
@@ -40,7 +42,7 @@ pub(crate) const PARKED_STRIP_SLIVER: i32 = 10;
 /// The window has been parked away from a shared display edge. Restore it in
 /// one move: interpolating from that parking slot would cross other windows.
 #[derive(bevy::ecs::component::Component)]
-struct DisplayParkedMarker;
+pub(crate) struct DisplayParkedMarker;
 
 /// Native windows cannot be clipped at a monitor boundary. If a frame spills
 /// onto a neighbor, park it along an exposed edge of its own display instead.
@@ -63,7 +65,9 @@ fn parking_origin(frame: IRect, viewport: IRect, neighbors: &[IRect]) -> Option<
     let right = viewport.max.x - PARKED_STRIP_SLIVER;
     let top = viewport.min.y - size.y + PARKED_STRIP_SLIVER;
     let bottom = viewport.max.y - PARKED_STRIP_SLIVER;
-    let aligned = clamp_origin_to_viewport(frame.min, size, viewport);
+    // A fixed slot, independent of the scrolling column's current x. Moving
+    // the parking slot during a scroll made hidden windows jump every frame.
+    let aligned = clamp_origin_to_viewport(viewport.min, size, viewport);
     [
         Origin::new(aligned.x, bottom),
         Origin::new(aligned.x, top),
@@ -76,6 +80,34 @@ fn parking_origin(frame: IRect, viewport: IRect, neighbors: &[IRect]) -> Option<
     ]
     .into_iter()
     .min_by_key(|origin| overlap(IRect::from_corners(*origin, *origin + size)))
+}
+
+fn constrained_origin(
+    frame: IRect,
+    viewport: IRect,
+    neighbors: &[IRect],
+    mode: DisplayEdgeMode,
+    park: bool,
+) -> Option<Origin> {
+    match mode {
+        DisplayEdgeMode::Native => None,
+        DisplayEdgeMode::Park => park
+            .then(|| parking_origin(frame, viewport, neighbors))
+            .flatten(),
+        DisplayEdgeMode::Overlap | DisplayEdgeMode::Supplementary => {
+            let spills = neighbors.iter().any(|neighbor| {
+                let intersection = frame.intersect(*neighbor);
+                intersection.width() > 0 && intersection.height() > 0
+            });
+            spills.then(|| {
+                if park && frame.min.y >= viewport.max.y - PARKED_STRIP_SLIVER {
+                    parking_origin(frame, viewport, neighbors).unwrap_or(frame.min)
+                } else {
+                    clamp_origin_to_viewport(frame.min, frame.size(), viewport)
+                }
+            })
+        }
+    }
 }
 
 /// A strip, its entity, origin, display, whether it's the active one, and the
@@ -510,6 +542,47 @@ impl LayoutStrip {
 
     pub(crate) fn append_strip(&mut self, other: &mut Self) {
         self.columns.append(&mut other.columns);
+    }
+
+    /// Replace one window without changing its column, stack or tab position.
+    pub(crate) fn replace_window(&mut self, from: Entity, to: Entity) {
+        for column in &mut self.columns {
+            match column {
+                Column::Single(entity) | Column::Fullscren(entity) => {
+                    if *entity == from {
+                        *entity = to;
+                    }
+                }
+                Column::Tabs(tabs) => {
+                    for entity in tabs {
+                        if *entity == from {
+                            *entity = to;
+                        }
+                    }
+                }
+                Column::Stack(items) => {
+                    for item in items {
+                        match item {
+                            StackItem::Single(entity) => {
+                                if *entity == from {
+                                    *entity = to;
+                                }
+                            }
+                            StackItem::Tabs(tabs) => {
+                                for entity in tabs {
+                                    if *entity == from {
+                                        *entity = to;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if self.tabbed_stacks.remove(&from) {
+            self.tabbed_stacks.insert(to);
+        }
     }
 
     pub fn append_tab_group(&mut self, entities: &[Entity]) {
@@ -1160,7 +1233,10 @@ fn binpack_heights(heights: &[i32], min_height: i32, total_height: i32) -> Optio
 
 /// Watches for size changes to windows and if they are changed, signals to the layout strip.
 #[instrument(level = Level::DEBUG, skip_all)]
-fn layout_sizes_changed(changed_sizes: ResizedWindows, workspaces: Query<&mut LayoutStrip>) {
+pub(crate) fn layout_sizes_changed(
+    changed_sizes: ResizedWindows,
+    workspaces: Query<&mut LayoutStrip>,
+) {
     let changed_entities = changed_sizes.iter().collect::<EntityHashSet>();
     workspaces.into_iter().for_each(|mut strip| {
         if strip_has_changed_window(&strip, &changed_entities) {
@@ -1600,17 +1676,21 @@ fn insert_stack_item_window_contexts(
 /// the layout strip against the current display viewport.
 #[instrument(level = Level::DEBUG, skip_all)]
 #[allow(clippy::too_many_arguments)]
-fn position_layout_windows(
+pub(crate) fn position_layout_windows(
     positioned_windows: RepositionedWindows,
     workspaces: StripsForWindowPositioning,
     snap_guards: Query<&SnapStripMarker>,
     parked_windows: Query<(), With<DisplayParkedMarker>>,
     focused_windows: Query<(), With<FocusedMarker>>,
+    animating_strips: Query<(), (With<LayoutStrip>, With<RepositionMarker>)>,
+    focus_history: Res<super::focus::FocusHistory>,
+    edge_selection: Option<Res<DisplayEdges>>,
     displays: DisplayViewports,
     config: Res<Config>,
     mut commands: Commands,
 ) {
     let offscreen_sliver_width = config.sliver_width();
+    let edge_mode = super::display_edges::mode(&config, edge_selection.as_deref());
     let (_, pad_right, _, pad_left) = config.edge_padding();
     let mut strip_contexts = EntityHashMap::default();
     for (strip_entity, layout_strip, Position(strip_position), swiping, child_of) in &workspaces {
@@ -1701,14 +1781,23 @@ fn position_layout_windows(
             .collect::<Vec<_>>();
         // A focused oversized window may unavoidably cross a display edge.
         // Keep it usable; only park background windows or hidden workspaces.
-        let safe_origin = (!focused_windows.contains(entity) || frame.min.y >= park_row)
-            .then(|| parking_origin(frame, viewport, &neighbors))
-            .flatten();
+        let owner = workspaces
+            .iter()
+            .find(|(_, strip, _, _, _)| strip.contains(entity));
+        let last_focused =
+            owner.and_then(|(_, strip, _, _, _)| focus_history.last_managed(strip.id()));
+        let strip_animating =
+            owner.is_some_and(|(entity, _, _, _, _)| animating_strips.contains(entity));
+        let park = (!focused_windows.contains(entity) && last_focused != Some(entity))
+            || frame.min.y >= park_row;
+        let safe_origin = constrained_origin(frame, viewport, &neighbors, edge_mode, park);
         if let Some(origin) = safe_origin {
             frame = IRect::from_corners(origin, origin + frame.size());
             commands.entity(entity).insert(DisplayParkedMarker);
+            commands.entity(entity).insert(DisplayConstrainedMarker);
         } else if parked_windows.contains(entity) {
             commands.entity(entity).remove::<DisplayParkedMarker>();
+            commands.entity(entity).remove::<DisplayConstrainedMarker>();
         }
 
         if bounds.0 != frame.size() {
@@ -1741,9 +1830,12 @@ fn position_layout_windows(
             // restore-driven, since its last position can land close enough
             // to its target. See `SnapStripMarker`.
             if context.swiping
+                // The strip already supplies the animation. A second lerp on
+                // every window chased its moving target and made scrolling lag.
+                || strip_animating
                 || context.snap_settling
-                || safe_origin.is_some()
-                || parked_windows.contains(entity)
+                || edge_mode == DisplayEdgeMode::Park
+                    && (safe_origin.is_some() || parked_windows.contains(entity))
                 || offscreen_move && !config.virtual_workspace_animations()
             {
                 position.0 = frame.min;
@@ -1761,6 +1853,66 @@ fn position_layout_windows(
 mod tests {
     use super::*;
     use bevy::prelude::*;
+
+    #[test]
+    fn overlap_preserves_size_and_moves_continuously_at_shared_edge() {
+        let viewport = IRect::new(0, 20, 1000, 800);
+        let neighbor = IRect::new(-1000, 0, 0, 800);
+        let size = Size::new(400, 700);
+        for x in -350..=50 {
+            let frame = IRect::from_corners(Origin::new(x, 20), Origin::new(x, 20) + size);
+            let origin =
+                constrained_origin(frame, viewport, &[neighbor], DisplayEdgeMode::Overlap, true)
+                    .unwrap_or(frame.min);
+            assert_eq!(origin, Origin::new(x.max(0), 20));
+            assert_eq!(
+                IRect::from_corners(origin, origin + size)
+                    .intersect(neighbor)
+                    .width(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn parking_slot_is_fixed_while_logical_column_scrolls() {
+        let viewport = IRect::new(0, 20, 1000, 800);
+        let neighbor = IRect::new(-1000, 0, 0, 800);
+        let size = Size::new(400, 700);
+        let first = parking_origin(
+            IRect::from_corners(Origin::new(-300, 20), Origin::new(100, 720)),
+            viewport,
+            &[neighbor],
+        );
+        for x in [-399, -250, -100, -1] {
+            let frame = IRect::from_corners(Origin::new(x, 20), Origin::new(x, 20) + size);
+            assert_eq!(parking_origin(frame, viewport, &[neighbor]), first);
+        }
+    }
+
+    #[test]
+    fn native_mode_preserves_overflow_and_hidden_overlap_stays_parked() {
+        let viewport = IRect::new(0, 20, 1000, 800);
+        let neighbor = IRect::new(1000, 0, 2000, 800);
+        let frame = IRect::new(990, 790, 1390, 1490);
+        assert_eq!(
+            constrained_origin(frame, viewport, &[neighbor], DisplayEdgeMode::Native, true),
+            None
+        );
+        let origin =
+            constrained_origin(frame, viewport, &[neighbor], DisplayEdgeMode::Overlap, true)
+                .unwrap();
+        assert!(
+            origin.y >= viewport.max.y - PARKED_STRIP_SLIVER
+                || origin.y + frame.height() <= viewport.min.y + PARKED_STRIP_SLIVER
+        );
+        assert_eq!(
+            IRect::from_corners(origin, origin + frame.size())
+                .intersect(neighbor)
+                .width(),
+            0
+        );
+    }
 
     #[test]
     fn signature_tolerates_pixel_drift_but_not_a_reshape() {

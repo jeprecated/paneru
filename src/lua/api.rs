@@ -641,6 +641,8 @@ fn config_to_lua_table(lua: &Lua, config: &Config) -> mlua::Result<Table> {
         auto_center: _,
         sliver_height: _,
         sliver_width: _,
+        display_edge_mode: _,
+        supplementary_display,
         padding_top: _,
         padding_bottom: _,
         padding_left: _,
@@ -681,6 +683,8 @@ fn config_to_lua_table(lua: &Lua, config: &Config) -> mlua::Result<Table> {
     options.set("auto_center", config.auto_center())?;
     options.set("sliver_height", config.sliver_height())?;
     options.set("sliver_width", config.sliver_width())?;
+    options.set("display_edge_mode", config.display_edge_mode().token())?;
+    options.set("supplementary_display", *supplementary_display)?;
     options.set(
         "mouse_resize_modifier",
         config.mouse_resize_modifier().map(format_modifiers),
@@ -881,6 +885,7 @@ mod tests {
             animation_speed = 12.0
             mouse_resize_modifier = "alt"
             menubar_height = 24
+            supplementary_display = 1
 
             [swipe.gesture]
             fingers_count = 3

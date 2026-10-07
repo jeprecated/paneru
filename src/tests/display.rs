@@ -15,6 +15,388 @@ use crate::{assert_not_on_workspace, assert_on_workspace, assert_window_at, asse
 use super::*;
 
 #[test]
+fn test_supplementary_swaps_one_window_and_restores_scrolling_width() {
+    use crate::types::commands::DisplayEdgeMode;
+    let config: Config = (
+        MainOptions {
+            display_edge_mode: Some(DisplayEdgeMode::Supplementary),
+            supplementary_display: Some(EXT_DISPLAY_ID),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_windows(3)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-800, 0, 0, 600),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-750, 20, -350, 600);
+        });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Focus(Direction::Nth(1))),
+    });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    let sender = find_window_entity(1, world);
+    let old = find_window_entity(100, world);
+    let size = world.get::<crate::ecs::Bounds>(sender).unwrap().0;
+    let offset = world
+        .query::<(&LayoutStrip, &crate::ecs::Position)>()
+        .iter(world)
+        .find(|(strip, _)| strip.id() == TEST_WORKSPACE_ID)
+        .unwrap()
+        .1
+        .0;
+    harness.world().write_message(Event::Command {
+        command: Command::DisplaySupplementary,
+    });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    assert_on_workspace!(world, 1, EXT_WORKSPACE_ID);
+    assert_on_workspace!(world, 100, TEST_WORKSPACE_ID);
+    crate::assert_focused!(world, 100);
+    let expected = vec![
+        find_window_entity(0, world),
+        old,
+        find_window_entity(2, world),
+    ];
+    let strip = world
+        .query::<(&LayoutStrip, &crate::ecs::Position)>()
+        .iter(world)
+        .find(|(strip, _)| strip.id() == TEST_WORKSPACE_ID)
+        .unwrap();
+    assert_eq!(strip.0.all_windows(), expected);
+    assert_eq!(strip.1.0, offset);
+    assert_eq!(world.get::<crate::ecs::Bounds>(old).unwrap().0, size);
+    let frame = world.get::<Window>(sender).unwrap().frame();
+    assert_eq!(frame, IRect::new(-800, TEST_MENUBAR_HEIGHT, 0, 600));
+    harness.world().write_message(Event::Command {
+        command: Command::DisplayFocus(Direction::West),
+    });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Virtual(Direction::South)),
+    });
+    harness.advance(Duration::from_secs(1));
+    assert_on_workspace!(harness.world(), 1, EXT_WORKSPACE_ID);
+    assert_eq!(
+        harness.world().get::<Window>(sender).unwrap().frame(),
+        frame
+    );
+    harness.world().write_message(Event::Command {
+        command: Command::DisplayEdges(DisplayEdgeMode::Overlap),
+    });
+    harness.advance(Duration::from_secs(1));
+    assert!(
+        harness
+            .world()
+            .get::<crate::ecs::supplementary::SupplementaryWindow>(sender)
+            .is_none()
+    );
+    assert!(
+        harness
+            .world()
+            .get::<Window>(sender)
+            .unwrap()
+            .frame()
+            .width()
+            < 800
+    );
+}
+
+#[test]
+fn test_supplementary_mode_allows_normal_laptop_scrolling_when_alone() {
+    use crate::types::commands::DisplayEdgeMode;
+    let config: Config = (
+        MainOptions {
+            display_edge_mode: Some(DisplayEdgeMode::Supplementary),
+            supplementary_display: Some(TEST_DISPLAY_ID),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    TestHarness::new().with_config(config).with_windows(4)
+        .on_iteration(1, |world, _| {
+            crate::assert_focused!(world, 3);
+            assert_eq!(world.query_filtered::<Entity, With<crate::ecs::supplementary::SupplementaryDisplay>>().iter(world).count(), 0);
+            assert_on_workspace!(world, 0, TEST_WORKSPACE_ID);
+            assert_on_workspace!(world, 3, TEST_WORKSPACE_ID);
+        }).run(vec![Event::MenuOpened {window_id: 0}, Event::Command { command: Command::Window(Operation::Focus(Direction::Last)) }]);
+}
+
+#[test]
+fn test_supplementary_mode_evicts_extras_and_releases_role_after_unplug() {
+    use crate::types::commands::DisplayEdgeMode;
+    let config: Config = (
+        MainOptions {
+            display_edge_mode: Some(DisplayEdgeMode::Supplementary),
+            supplementary_display: Some(EXT_DISPLAY_ID),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_windows(2)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-800, 0, 0, 600),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-750, 20, -350, 600);
+        })
+        .with_workspace_window(101, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-350, 20, 0, 600);
+        });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    let members = world
+        .query::<&LayoutStrip>()
+        .iter(world)
+        .filter(|strip| strip.id() == EXT_WORKSPACE_ID)
+        .flat_map(LayoutStrip::all_windows)
+        .collect::<Vec<_>>();
+    assert_eq!(members.len(), 1);
+    let occupant = members[0];
+    let before = world.get::<Window>(occupant).unwrap().frame().width();
+    harness.mock_state.remove_display(TEST_DISPLAY_ID);
+    harness.world().write_message(Event::DisplayRemoved {
+        display_id: TEST_DISPLAY_ID,
+    });
+    harness.advance(Duration::from_secs(3));
+    assert!(
+        harness
+            .world()
+            .get::<crate::ecs::supplementary::SupplementaryWindow>(occupant)
+            .is_none()
+    );
+    assert!(
+        harness
+            .world()
+            .get::<Window>(occupant)
+            .unwrap()
+            .frame()
+            .width()
+            < before
+    );
+    assert_eq!(
+        harness
+            .world()
+            .query_filtered::<Entity, With<crate::ecs::supplementary::SupplementaryDisplay>>()
+            .iter(harness.world())
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn test_edge_modes_switch_without_changing_logical_columns() {
+    use crate::types::commands::DisplayEdgeMode;
+    let mut harness = TestHarness::new().with_windows(4).with_display(
+        EXT_DISPLAY_ID,
+        IRect::new(-1920, 0, 0, 1200),
+        vec![EXT_WORKSPACE_ID],
+    );
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Focus(Direction::Last)),
+    });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    let columns = world
+        .query::<&LayoutStrip>()
+        .iter(world)
+        .find(|strip| strip.id() == TEST_WORKSPACE_ID)
+        .unwrap()
+        .all_windows();
+    let logical = columns
+        .iter()
+        .map(|entity| {
+            (
+                *entity,
+                world.get::<crate::ecs::LayoutPosition>(*entity).unwrap().0,
+            )
+        })
+        .collect::<Vec<_>>();
+    for mode in [
+        DisplayEdgeMode::Overlap,
+        DisplayEdgeMode::Native,
+        DisplayEdgeMode::Park,
+        DisplayEdgeMode::Overlap,
+    ] {
+        harness.world().write_message(Event::Command {
+            command: Command::DisplayEdges(mode),
+        });
+        harness.advance(Duration::from_secs(1));
+        let world = harness.world();
+        let members = world
+            .query::<&LayoutStrip>()
+            .iter(world)
+            .find(|strip| strip.id() == TEST_WORKSPACE_ID)
+            .unwrap()
+            .all_windows();
+        assert_eq!(members, columns);
+        for (entity, slot) in &logical {
+            assert_eq!(
+                world.get::<crate::ecs::LayoutPosition>(*entity).unwrap().0,
+                *slot
+            );
+            let frame = world.get::<Window>(*entity).unwrap().frame();
+            assert_eq!(frame.width(), TEST_WINDOW_WIDTH);
+            if mode == DisplayEdgeMode::Overlap {
+                assert!(
+                    frame.min.x >= 0,
+                    "overlap must stay on its own screen: {frame:?}"
+                );
+            }
+        }
+        crate::assert_focused!(world, 3);
+    }
+}
+
+#[test]
+fn test_overlap_scrolling_centers_columns_without_crossing_shared_edge() {
+    use crate::types::commands::DisplayEdgeMode;
+    let config: Config = (
+        MainOptions {
+            auto_center: Some(true),
+            display_edge_mode: Some(DisplayEdgeMode::Overlap),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_windows(5)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-1920, 0, 0, 1200),
+            vec![EXT_WORKSPACE_ID],
+        );
+    harness.advance(Duration::from_secs(1));
+    for id in [4, 3, 2, 1, 0, 1, 2, 3, 4] {
+        harness.world().write_message(Event::Command {
+            command: Command::Window(Operation::Focus(Direction::Nth(id))),
+        });
+        harness.advance(Duration::from_secs(1));
+        let world = harness.world();
+        let focused = find_window_entity(WinID::try_from(id).unwrap(), world);
+        let frame = world.get::<Window>(focused).unwrap().frame();
+        assert_eq!(frame.min.x, (TEST_DISPLAY_WIDTH - TEST_WINDOW_WIDTH) / 2);
+        for window in world.query::<&Window>().iter(world) {
+            assert!(window.frame().min.x >= 0);
+            assert_eq!(window.frame().width(), TEST_WINDOW_WIDTH);
+        }
+    }
+}
+
+#[test]
+fn test_resize_notification_for_move_does_not_resize_stack_neighbor() {
+    use bevy::ecs::system::RunSystemOnce as _;
+    let mut harness = TestHarness::new().with_windows(2);
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Focus(Direction::Last)),
+    });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Stack(true)),
+    });
+    harness.advance(Duration::from_secs(1));
+    let state = harness.mock_state.clone();
+    let world = harness.world();
+    let above = find_window_entity(0, world);
+    let below = find_window_entity(1, world);
+    let original = world.get::<crate::ecs::Bounds>(above).unwrap().0;
+    let origin = world.get::<crate::ecs::Position>(below).unwrap().0;
+    state.os_move_window(1, Origin::new(origin.x + 20, origin.y + 40));
+    world.write_message(Event::WindowResized { window_id: 1 });
+    world
+        .run_system_once(crate::ecs::systems::window_resized_update_frame)
+        .unwrap();
+    assert_eq!(world.get::<crate::ecs::Bounds>(above).unwrap().0, original);
+}
+
+#[test]
+fn test_directional_screen_focus_preserves_each_strip_offset() {
+    let config: Config = (
+        MainOptions {
+            auto_center: Some(true),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_windows(3)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-1920, 0, 0, 1200),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-1600, 20, -1200, 1020);
+        });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Focus(Direction::Last)),
+    });
+    harness.advance(Duration::from_secs(1));
+    let offsets = |world: &mut World| {
+        world
+            .query::<(&LayoutStrip, &crate::ecs::Position)>()
+            .iter(world)
+            .map(|(strip, position)| (strip.id(), position.0))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    let before = offsets(harness.world());
+    harness.world().write_message(Event::Command {
+        command: Command::DisplayFocus(Direction::West),
+    });
+    harness.advance(Duration::from_secs(1));
+    crate::assert_focused!(harness.world(), 100);
+    assert_eq!(offsets(harness.world()), before);
+    harness.world().write_message(Event::Command {
+        command: Command::DisplayFocus(Direction::East),
+    });
+    harness.advance(Duration::from_secs(1));
+    crate::assert_focused!(harness.world(), 2);
+    assert_eq!(offsets(harness.world()), before);
+}
+
+#[test]
+fn test_late_move_echo_cannot_rewrite_snapped_position() {
+    use bevy::ecs::system::RunSystemOnce as _;
+    let mut harness = TestHarness::new().with_windows(1);
+    harness.advance(Duration::from_secs(1));
+    let state = harness.mock_state.clone();
+    let world = harness.world();
+    let entity = find_window_entity(0, world);
+    let origin = world.get::<crate::ecs::Position>(entity).unwrap().0;
+    let until = world.resource::<Time>().elapsed() + Duration::from_millis(150);
+    world
+        .entity_mut(entity)
+        .insert(crate::ecs::display_edges::RecentWindowMove { origin, until });
+    state.os_move_window(0, Origin::new(origin.x + 75, origin.y + 25));
+    world.write_message(Event::WindowMoved { window_id: 0 });
+    world
+        .run_system_once(crate::ecs::systems::window_moved_update_frame)
+        .unwrap();
+    assert_eq!(world.get::<crate::ecs::Position>(entity).unwrap().0, origin);
+}
+
+#[test]
 fn test_new_external_window_stays_on_its_display_without_stealing_focus() {
     TestHarness::new()
         .with_display(

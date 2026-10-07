@@ -5,7 +5,7 @@
 //! together here and are checked against each other by round-trip tests.
 
 use crate::types::commands::{
-    Command, Direction, MouseMove, MoveFocus, Operation, ResizeDirection,
+    Command, Direction, DisplayEdgeMode, MouseMove, MoveFocus, Operation, ResizeDirection,
     parse_virtual_workspace_number,
 };
 
@@ -49,6 +49,25 @@ pub fn parse_command(argv: &[&str]) -> Result<Command> {
         "quit" => Command::Quit,
         "restart" => Command::Restart,
         "reload" => Command::Reload,
+        "display" => match (argv.get(1), argv.get(2)) {
+            (Some(&"supplementary"), None) if argv.len() == 2 => Command::DisplaySupplementary,
+            (Some(&"edges"), Some(mode)) if argv.len() == 3 => {
+                Command::DisplayEdges(DisplayEdgeMode::parse(mode)?)
+            }
+            (Some(&"focus"), Some(direction)) if argv.len() == 3 => {
+                let direction = Direction::parse(direction)?;
+                if !matches!(
+                    direction,
+                    Direction::North | Direction::South | Direction::East | Direction::West
+                ) {
+                    return Err(ParseError::new(
+                        "display focus requires a cardinal direction",
+                    ));
+                }
+                Command::DisplayFocus(direction)
+            }
+            _ => return Err(ParseError::new("invalid display command")),
+        },
         _ => return Err(ParseError::new(format!("unhandled command '{argv:?}'"))),
     })
 }
@@ -169,6 +188,13 @@ impl Command {
             Command::Quit => vec!["quit".to_string()],
             Command::Restart => vec!["restart".to_string()],
             Command::Reload => vec!["reload".to_string()],
+            Command::DisplayEdges(mode) => {
+                ["display", "edges", mode.token()].map(String::from).into()
+            }
+            Command::DisplayFocus(direction) => {
+                vec!["display".into(), "focus".into(), direction.token()]
+            }
+            Command::DisplaySupplementary => vec!["display".into(), "supplementary".into()],
             Command::PrintState => vec!["printstate".to_string()],
             Command::Lua(_) | Command::Layout(_) => return None,
         };
@@ -293,6 +319,15 @@ mod tests {
             Command::Reload,
             Command::PrintState,
             Command::Mouse(MouseMove::ToNextDisplay),
+            Command::DisplayEdges(DisplayEdgeMode::Native),
+            Command::DisplayEdges(DisplayEdgeMode::Overlap),
+            Command::DisplayEdges(DisplayEdgeMode::Park),
+            Command::DisplayEdges(DisplayEdgeMode::Supplementary),
+            Command::DisplaySupplementary,
+            Command::DisplayFocus(Direction::West),
+            Command::DisplayFocus(Direction::East),
+            Command::DisplayFocus(Direction::North),
+            Command::DisplayFocus(Direction::South),
         ] {
             assert_eq!(
                 format!("{:?}", round_trip(&command)),
