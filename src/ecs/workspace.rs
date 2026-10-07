@@ -174,7 +174,7 @@ pub(crate) struct SnapStripMarker {
 /// shortly after a switch still animates normally.
 const SNAP_STRIP_GUARD_TIMEOUT: Duration = Duration::from_millis(500);
 
-fn spawn_snap_strip_guard(strip: Entity, commands: &mut Commands) {
+pub(crate) fn spawn_snap_strip_guard(strip: Entity, commands: &mut Commands) {
     let timeout = Timeout::new(SNAP_STRIP_GUARD_TIMEOUT, None, commands);
     commands.spawn((timeout, SnapStripMarker { strip }));
 }
@@ -613,16 +613,20 @@ pub(crate) fn cleanup_unordered_windows(
 #[instrument(level = Level::DEBUG, skip_all, fields(trigger))]
 fn cleanup_active_workspace_marker(
     trigger: On<Add, ActiveWorkspaceMarker>,
-    workspaces: Query<(Entity, Has<ActiveWorkspaceMarker>), With<LayoutStrip>>,
+    workspaces: Query<(Entity, Has<ActiveWorkspaceMarker>, &ChildOf), With<LayoutStrip>>,
     mut commands: Commands,
 ) {
-    workspaces.iter().for_each(|(entity, marker)| {
+    workspaces.iter().for_each(|(entity, marker, child)| {
         if entity == trigger.entity
             && let Ok(mut entity_commands) = commands.get_entity(entity)
         {
             // Mark the currently selected VW with selected marker. This also removes the previously
             // selected markers from other VW's on the same workspace.
             entity_commands.try_insert(SelectedVirtualMarker);
+            // AX focus can activate a strip before the menu-bar display
+            // notification arrives. Commands and sizing must already use its
+            // owning display, rather than the screen we just left.
+            commands.entity(child.parent()).insert(ActiveDisplayMarker);
         } else if marker && let Ok(mut entity_commands) = commands.get_entity(entity) {
             // Remove the active marker from any other workspace.
             entity_commands.try_remove::<ActiveWorkspaceMarker>();

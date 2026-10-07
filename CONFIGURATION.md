@@ -239,12 +239,14 @@ https://github.com/karinushka/paneru/blob/3790b01f8d65df5d9000142db7cf25f9270dcc
 | `window_copyrule` | Copy a window rule template for the focused window to the clipboard. |
 | `quit` | Exit Paneru. |
 | `restart` | Restart the Paneru service (`paneru restart`). |
+| `reload` | Rescan windows and displays and realign existing layouts in place (`paneru reload`). |
 
 **Example:**
 ```toml
 [bindings]
 window_focus_west = "cmd - h"
 window_resize = ["alt - r", "ctrl - r"]
+reload = "cmd + ctrl + alt - r"
 ```
 
 ### Virtual workspaces (Experimental)

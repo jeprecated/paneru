@@ -26,7 +26,7 @@ use super::{
 use crate::config::{Config, decorations::BorderRadiusOption};
 use crate::ecs::display::FloatingLayer;
 use crate::ecs::layout::{Column, LayoutStrip};
-use crate::ecs::params::{ActiveDisplay, FrameActivity, Windows};
+use crate::ecs::params::{FrameActivity, Windows};
 use crate::ecs::{
     ActiveWorkspaceMarker, Bounds, BruteforceWindows, FlashMessage, FocusedMarker, Initializing,
     LowPowerMode, MissionControlActive, Position, ReadDisplayProperties, RestoreWindowState,
@@ -118,6 +118,7 @@ pub fn gather_displays(window_manager: Res<WindowManager>, mut commands: Command
         return;
     };
     for (display, workspaces) in window_manager.present_displays() {
+        let display_id = display.id();
         let origin = Position(display.bounds().min);
         let entity = if display.id() == active_display_id {
             commands.spawn((display, ActiveDisplayMarker))
@@ -128,12 +129,12 @@ pub fn gather_displays(window_manager: Res<WindowManager>, mut commands: Command
 
         commands.trigger(ReadDisplayProperties(entity));
 
-        let Ok(active_space) = window_manager.active_display_space(active_display_id) else {
-            return;
+        let Ok(active_space) = window_manager.active_display_space(display_id) else {
+            continue;
         };
 
         for id in workspaces {
-            let active = id == active_space;
+            let active = display_id == active_display_id && id == active_space;
             commands.spawn_layout_strip(LayoutStrip::new(id, 0), origin.0, entity, active);
             commands.spawn((FloatingLayer::new(id), ChildOf(entity)));
         }
@@ -1105,13 +1106,9 @@ pub(super) fn update_overlays(
 pub(super) fn commit_window_position(
     mut moved_windows: Populated<(&mut Window, &Position), Changed<Position>>,
 ) {
-    // `par_iter_mut` runs on `ComputeTaskPool` worker threads, which have no
-    // `CFRunLoop` of their own to drain thread-local autorelease pools.
-    moved_windows
-        .par_iter_mut()
-        .for_each(|(mut window, position)| {
-            objc2::rc::autoreleasepool(|_| window.reposition(position.0));
-        });
+    for (mut window, position) in &mut moved_windows {
+        window.reposition(position.0);
+    }
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
@@ -1141,16 +1138,29 @@ pub(super) fn verify_window_position(
 
 #[instrument(level = Level::TRACE, skip_all)]
 pub(super) fn commit_window_size(
-    active_display: ActiveDisplay,
-    mut resized_windows: Populated<(&mut Window, &Bounds, &mut WidthRatio), Changed<Bounds>>,
+    strips: Query<(&LayoutStrip, &ChildOf)>,
+    displays: Query<&Display>,
+    mut resized_windows: Populated<
+        (Entity, &mut Window, &Bounds, &mut WidthRatio),
+        Changed<Bounds>,
+    >,
 ) {
-    let display_bounds = active_display.bounds();
-    resized_windows
-        .par_iter_mut()
-        .for_each(|(mut window, size, mut width_ratio)| {
-            width_ratio.0 = f64::from(size.0.x) / f64::from(display_bounds.width());
-            objc2::rc::autoreleasepool(|_| window.resize(size.0));
-        });
+    for (entity, mut window, size, mut width_ratio) in &mut resized_windows {
+        let owner = strips
+            .iter()
+            .find_map(|(strip, child)| strip.contains(entity).then_some(child.parent()));
+        let display = owner
+            .and_then(|owner| displays.get(owner).ok())
+            .or_else(|| {
+                displays
+                    .iter()
+                    .find(|display| display.bounds().contains(window.frame().center()))
+            });
+        if let Some(display) = display {
+            width_ratio.0 = f64::from(size.0.x) / f64::from(display.width());
+        }
+        window.resize(size.0);
+    }
 }
 
 /// Restores user-visible window state before Paneru shuts down: clears any

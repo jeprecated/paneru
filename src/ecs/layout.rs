@@ -16,9 +16,9 @@ use crate::config::Config;
 use crate::ecs::params::Windows;
 use crate::ecs::workspace::SnapStripMarker;
 use crate::ecs::{
-    ActiveWorkspaceMarker, Bounds, DockPosition, EnsureVisibleMarker, Initializing, LayoutPosition,
-    ManualStripOffset, Position, RepositionMarker, ReshuffleAroundMarker, Scrolling,
-    SpawnCommandsExt,
+    ActiveWorkspaceMarker, Bounds, DockPosition, EnsureVisibleMarker, FocusedMarker, Initializing,
+    LayoutPosition, ManualStripOffset, Position, RepositionMarker, ReshuffleAroundMarker,
+    Scrolling, SpawnCommandsExt,
 };
 use crate::errors::{Error, Result};
 use crate::manager::{Display, Origin, Size, Window};
@@ -36,6 +36,47 @@ pub struct LayoutEventsPlugin;
 /// corner, which keeps a small sliver on screen: macOS reassigns a window whose
 /// frame has left the display entirely to whichever display it landed on.
 pub(crate) const PARKED_STRIP_SLIVER: i32 = 10;
+
+/// The window has been parked away from a shared display edge. Restore it in
+/// one move: interpolating from that parking slot would cross other windows.
+#[derive(bevy::ecs::component::Component)]
+struct DisplayParkedMarker;
+
+/// Native windows cannot be clipped at a monitor boundary. If a frame spills
+/// onto a neighbor, park it along an exposed edge of its own display instead.
+/// Keep a sliver on the owner so `WindowServer` retains its Space assignment.
+fn parking_origin(frame: IRect, viewport: IRect, neighbors: &[IRect]) -> Option<Origin> {
+    let overlap = |rect: IRect| -> i64 {
+        neighbors
+            .iter()
+            .map(|neighbor| {
+                let intersection = rect.intersect(*neighbor);
+                i64::from(intersection.width().max(0)) * i64::from(intersection.height().max(0))
+            })
+            .sum()
+    };
+    if overlap(frame) == 0 {
+        return None;
+    }
+    let size = frame.size();
+    let left = viewport.min.x - size.x + PARKED_STRIP_SLIVER;
+    let right = viewport.max.x - PARKED_STRIP_SLIVER;
+    let top = viewport.min.y - size.y + PARKED_STRIP_SLIVER;
+    let bottom = viewport.max.y - PARKED_STRIP_SLIVER;
+    let aligned = clamp_origin_to_viewport(frame.min, size, viewport);
+    [
+        Origin::new(aligned.x, bottom),
+        Origin::new(aligned.x, top),
+        Origin::new(left, aligned.y),
+        Origin::new(right, aligned.y),
+        Origin::new(right, bottom),
+        Origin::new(left, bottom),
+        Origin::new(right, top),
+        Origin::new(left, top),
+    ]
+    .into_iter()
+    .min_by_key(|origin| overlap(IRect::from_corners(*origin, *origin + size)))
+}
 
 /// A strip, its entity, origin, display, whether it's the active one, and the
 /// offset it is animating toward if a move is already in flight.
@@ -1558,10 +1599,13 @@ fn insert_stack_item_window_contexts(
 /// Reacts to changes of logical window layout in the strip and any have been changed, reposition
 /// the layout strip against the current display viewport.
 #[instrument(level = Level::DEBUG, skip_all)]
+#[allow(clippy::too_many_arguments)]
 fn position_layout_windows(
     positioned_windows: RepositionedWindows,
     workspaces: StripsForWindowPositioning,
     snap_guards: Query<&SnapStripMarker>,
+    parked_windows: Query<(), With<DisplayParkedMarker>>,
+    focused_windows: Query<(), With<FocusedMarker>>,
     displays: DisplayViewports,
     config: Res<Config>,
     mut commands: Commands,
@@ -1650,6 +1694,23 @@ fn position_layout_windows(
             frame.max.y = park_row + height;
         }
 
+        let neighbors = displays
+            .iter()
+            .filter(|(other, _)| other.id() != display.id())
+            .map(|(other, _)| other.bounds())
+            .collect::<Vec<_>>();
+        // A focused oversized window may unavoidably cross a display edge.
+        // Keep it usable; only park background windows or hidden workspaces.
+        let safe_origin = (!focused_windows.contains(entity) || frame.min.y >= park_row)
+            .then(|| parking_origin(frame, viewport, &neighbors))
+            .flatten();
+        if let Some(origin) = safe_origin {
+            frame = IRect::from_corners(origin, origin + frame.size());
+            commands.entity(entity).insert(DisplayParkedMarker);
+        } else if parked_windows.contains(entity) {
+            commands.entity(entity).remove::<DisplayParkedMarker>();
+        }
+
         if bounds.0 != frame.size() {
             bounds.0 = frame.size();
         }
@@ -1681,6 +1742,8 @@ fn position_layout_windows(
             // to its target. See `SnapStripMarker`.
             if context.swiping
                 || context.snap_settling
+                || safe_origin.is_some()
+                || parked_windows.contains(entity)
                 || offscreen_move && !config.virtual_workspace_animations()
             {
                 position.0 = frame.min;

@@ -312,4 +312,6 @@ pub enum Command {
     /// Window-addressed, unlike every other command here, and applied
     /// best-effort: see `ecs::layout_ops`. Never produced by parsing.
     Layout(Vec<crate::types::windowset::LayoutOp>),
+    /// Rescan displays and windows and realign the existing layouts in place.
+    Reload,
 }

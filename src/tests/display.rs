@@ -5,7 +5,7 @@ use bevy::time::TimeUpdateStrategy;
 
 use crate::commands::{Command, Direction, MouseMove, MoveFocus, Operation};
 use crate::config::{Config, MainOptions};
-use crate::ecs::layout::{LayoutStrip, PARKED_STRIP_SLIVER};
+use crate::ecs::layout::LayoutStrip;
 use crate::ecs::{DockPosition, Timeout};
 use crate::events::Event;
 use crate::manager::{Display, Origin, Size, Window};
@@ -13,6 +13,274 @@ use crate::platform::WinID;
 use crate::{assert_not_on_workspace, assert_on_workspace, assert_window_at, assert_window_size};
 
 use super::*;
+
+#[test]
+fn test_new_external_window_stays_on_its_display_without_stealing_focus() {
+    TestHarness::new()
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(1024, 0, 2944, 1200),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_windows(1)
+        .on_iteration(1, |world, state| {
+            let window = state.spawn_window(
+                TEST_PROCESS_ID,
+                EXT_WORKSPACE_ID,
+                100,
+                IRect::new(1100, 20, 1500, 1020),
+            );
+            world.trigger(crate::ecs::SpawnWindowTrigger(vec![window]));
+        })
+        .on_iteration(2, |world, _| {
+            assert_on_workspace!(world, 100, EXT_WORKSPACE_ID);
+            assert_not_on_workspace!(world, 100, TEST_WORKSPACE_ID);
+            crate::assert_focused!(world, 0);
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::Command {
+                command: Command::PrintState,
+            },
+        ]);
+}
+
+#[test]
+fn test_focusing_external_window_updates_display_before_notification() {
+    TestHarness::new()
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(1024, 0, 2944, 1200),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_windows(1)
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(1100, 20, 1500, 1020);
+        })
+        .on_iteration(1, |world, state| {
+            state.set_focused_window(100);
+            world.write_message(Event::WindowFocused { window_id: 100 });
+        })
+        .on_iteration(2, |world, _| {
+            assert_eq!(
+                world
+                    .query_filtered::<&Display, With<crate::ecs::ActiveDisplayMarker>>()
+                    .single(world)
+                    .unwrap()
+                    .id(),
+                EXT_DISPLAY_ID
+            );
+            crate::assert_focused!(world, 100);
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::Command {
+                command: Command::PrintState,
+            },
+        ]);
+}
+
+#[test]
+fn test_reload_prunes_stale_layout_entries() {
+    TestHarness::new()
+        .with_windows(1)
+        .on_iteration(1, |world, _| {
+            let dead = world.spawn_empty().id();
+            world
+                .query::<&mut LayoutStrip>()
+                .single_mut(world)
+                .unwrap()
+                .append(dead);
+            world.entity_mut(dead).despawn();
+        })
+        .on_iteration(2, |world, _| {
+            let members = world
+                .query::<&LayoutStrip>()
+                .single(world)
+                .unwrap()
+                .all_windows();
+            assert_eq!(members.len(), 1);
+            assert!(world.get::<Window>(members[0]).is_some());
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::Command {
+                command: Command::Reload,
+            },
+        ]);
+}
+
+#[test]
+fn test_external_window_width_uses_its_own_display() {
+    let config = Config::try_from("[windows.default]\ntitle = '.*'\nwidth = 0.5\n").unwrap();
+    TestHarness::new()
+        .with_config(config)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(1024, 0, 2944, 1200),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_windows(1)
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(1100, 20, 1500, 1020);
+        })
+        .on_iteration(1, |world, _| {
+            assert_window_size!(world, 100, 960, 1180);
+            let (window, ratio) = world
+                .query::<(&Window, &crate::ecs::WidthRatio)>()
+                .iter(world)
+                .find(|(window, _)| window.id() == 100)
+                .unwrap();
+            assert!(
+                (ratio.0 - 0.5).abs() < 0.001,
+                "{} has ratio {}",
+                window.id(),
+                ratio.0
+            );
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::Command {
+                command: Command::PrintState,
+            },
+        ]);
+}
+
+#[test]
+fn test_horizontal_neighbor_never_receives_scrolled_windows() {
+    TestHarness::new()
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(1024, 0, 2944, 1200),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_windows(6)
+        .on_iteration(1, |world, _| {
+            let neighbor = IRect::new(1024, 0, 2944, 1200);
+            for window in world.query::<&Window>().iter(world) {
+                let overlap = window.frame().intersect(neighbor);
+                assert!(
+                    overlap.width() == 0 || overlap.height() == 0,
+                    "window {} overlaps neighbor: {:?}",
+                    window.id(),
+                    window.frame()
+                );
+            }
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::Command {
+                command: Command::PrintState,
+            },
+        ]);
+}
+
+#[test]
+fn test_reload_discovers_missed_window_and_replays_frames() {
+    TestHarness::new()
+        .with_windows(2)
+        .on_iteration(1, |world, state| {
+            let original = world
+                .query::<(Entity, &Window)>()
+                .iter(world)
+                .find(|(_, window)| window.id() == 0)
+                .unwrap()
+                .0;
+            world
+                .entity_mut(original)
+                .insert(crate::ecs::Unmanaged::Floating);
+            state.spawn_window(
+                TEST_PROCESS_ID,
+                TEST_WORKSPACE_ID,
+                100,
+                IRect::new(50, 50, 450, 1050),
+            );
+            state.update_window(1, |window| window.frame = IRect::new(75, 75, 475, 1075));
+        })
+        .on_iteration(2, |world, _| {
+            assert_on_workspace!(world, 1, TEST_WORKSPACE_ID);
+            assert_on_workspace!(world, 100, TEST_WORKSPACE_ID);
+            assert_not_on_workspace!(world, 0, TEST_WORKSPACE_ID);
+            let window = world
+                .query::<&Window>()
+                .iter(world)
+                .find(|window| window.id() == 1)
+                .unwrap();
+            assert_eq!(window.frame().min.y, TEST_MENUBAR_HEIGHT);
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 1 },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::Command {
+                command: Command::Reload,
+            },
+        ]);
+}
+
+#[test]
+fn test_reload_preserves_virtual_workspace_membership() {
+    TestHarness::new()
+        .with_windows(3)
+        .on_iteration(1, |world, _| {
+            let entity = world
+                .query::<(Entity, &Window)>()
+                .iter(world)
+                .find(|(_, window)| window.id() == 0)
+                .unwrap()
+                .0;
+            assert!(
+                world
+                    .query::<&LayoutStrip>()
+                    .iter(world)
+                    .any(|strip| strip.virtual_index == 1 && strip.contains(entity))
+            );
+        })
+        .on_iteration(2, |world, _| {
+            let entity = world
+                .query::<(Entity, &Window)>()
+                .iter(world)
+                .find(|(_, window)| window.id() == 0)
+                .unwrap()
+                .0;
+            assert!(
+                world
+                    .query::<&LayoutStrip>()
+                    .iter(world)
+                    .any(|strip| strip.virtual_index == 1 && strip.contains(entity))
+            );
+            assert_eq!(
+                world
+                    .query_filtered::<&LayoutStrip, With<crate::ecs::ActiveWorkspaceMarker>>()
+                    .single(world)
+                    .unwrap()
+                    .virtual_index,
+                1
+            );
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::Command {
+                command: Command::Window(Operation::VirtualMove(
+                    Direction::South,
+                    MoveFocus::Follow,
+                )),
+            },
+            Event::Command {
+                command: Command::Reload,
+            },
+        ]);
+}
 
 #[test]
 fn test_multi_display_lifecycle() {
@@ -29,7 +297,11 @@ fn test_multi_display_lifecycle() {
         },
     ];
 
-    let mut harness = TestHarness::new().with_windows(1);
+    let mut harness = TestHarness::new().with_windows(1).with_display(
+        EXT_DISPLAY_ID,
+        IRect::new(1024, 0, 2944, 1200),
+        vec![EXT_WORKSPACE_ID],
+    );
     harness
         .app
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
@@ -39,21 +311,25 @@ fn test_multi_display_lifecycle() {
     harness
         .on_iteration(1, |world, state| {
             let mut query = world.query_filtered::<Entity, With<Display>>();
-            query.single(world).expect("should have one display");
+            assert_eq!(query.iter(world).count(), 2);
             state.remove_display(TEST_DISPLAY_ID);
         })
         .on_iteration(2, |world, mut state| {
             assert!(
                 world
-                    .query_filtered::<Entity, With<Display>>()
-                    .single(world)
-                    .is_err(),
+                    .query::<&Display>()
+                    .iter(world)
+                    .all(|display| display.id() != TEST_DISPLAY_ID),
                 "display should be despawned"
             );
 
             let workspace_entity = {
-                let mut query = world.query_filtered::<Entity, With<LayoutStrip>>();
-                query.single(world).expect("should have one workspace")
+                world
+                    .query::<(Entity, &LayoutStrip)>()
+                    .iter(world)
+                    .find(|(_, strip)| strip.id() == TEST_WORKSPACE_ID)
+                    .unwrap()
+                    .0
             };
             let workspace = world.entity(workspace_entity);
             assert!(
@@ -72,13 +348,19 @@ fn test_multi_display_lifecycle() {
         })
         .on_iteration(3, |world, _state| {
             let new_display_entity = world
-                .query_filtered::<Entity, With<Display>>()
-                .single(world)
-                .expect("display should be spawned again");
+                .query::<(Entity, &Display)>()
+                .iter(world)
+                .find(|(_, display)| display.id() == TEST_DISPLAY_ID)
+                .expect("display should be spawned again")
+                .0;
 
             let workspace_entity = {
-                let mut query = world.query_filtered::<Entity, With<LayoutStrip>>();
-                query.single(world).expect("should have one workspace")
+                world
+                    .query::<(Entity, &LayoutStrip)>()
+                    .iter(world)
+                    .find(|(_, strip)| strip.id() == TEST_WORKSPACE_ID)
+                    .unwrap()
+                    .0
             };
             let workspace = world.entity(workspace_entity);
             assert!(
@@ -113,21 +395,30 @@ fn test_multi_workspace_orphaning() {
     }));
 
     let workspaces = vec![TEST_WORKSPACE_ID, TEST_WORKSPACE_ID + 1];
-    let harness = TestHarness::new().with_display(
-        TEST_DISPLAY_ID,
-        IRect::new(0, 0, TEST_DISPLAY_WIDTH, TEST_DISPLAY_HEIGHT),
-        workspaces,
-    );
+    let harness = TestHarness::new()
+        .with_display(
+            TEST_DISPLAY_ID,
+            IRect::new(0, 0, TEST_DISPLAY_WIDTH, TEST_DISPLAY_HEIGHT),
+            workspaces,
+        )
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(1024, 0, 2944, 1200),
+            vec![EXT_WORKSPACE_ID],
+        );
     harness
         .on_iteration(1, |world, state| {
             let display_entity = world
-                .query_filtered::<Entity, With<Display>>()
-                .single(world)
-                .expect("should have one display");
+                .query::<(Entity, &Display)>()
+                .iter(world)
+                .find(|(_, display)| display.id() == TEST_DISPLAY_ID)
+                .unwrap()
+                .0;
 
             let workspace_entities = world
-                .query_filtered::<Entity, With<LayoutStrip>>()
+                .query::<(Entity, &LayoutStrip)>()
                 .iter(world)
+                .filter_map(|(entity, strip)| (strip.id() < EXT_WORKSPACE_ID).then_some(entity))
                 .collect::<Vec<_>>();
             assert_eq!(workspace_entities.len(), 2, "should have two workspaces");
 
@@ -142,8 +433,9 @@ fn test_multi_workspace_orphaning() {
         })
         .on_iteration(8, |world, _state| {
             let workspace_entities = world
-                .query_filtered::<Entity, With<LayoutStrip>>()
+                .query::<(Entity, &LayoutStrip)>()
                 .iter(world)
+                .filter_map(|(entity, strip)| (strip.id() < EXT_WORKSPACE_ID).then_some(entity))
                 .collect::<Vec<_>>();
             for &ws in &workspace_entities {
                 let entity: EntityRef = world.entity(ws);
@@ -811,10 +1103,16 @@ fn test_hidden_stack_stays_off_the_display_below() {
                     window.id(),
                     frame
                 );
-                assert_eq!(
-                    frame.min.y,
-                    TEST_DISPLAY_HEIGHT - PARKED_STRIP_SLIVER,
-                    "window {} should park on the corner sliver",
+                let neighbor = IRect::new(
+                    0,
+                    TEST_DISPLAY_HEIGHT,
+                    EXT_DISPLAY_WIDTH,
+                    TEST_DISPLAY_HEIGHT + EXT_DISPLAY_HEIGHT,
+                );
+                let overlap = frame.intersect(neighbor);
+                assert!(
+                    overlap.width() == 0 || overlap.height() == 0,
+                    "window {} should avoid the display below",
                     window.id()
                 );
             }
@@ -939,8 +1237,8 @@ fn test_empty_baseline_row_survives_display_removal() {
                 .single(world)
                 .expect("empty row 0 should be orphaned, not despawned");
             assert!(
-                world.entity(entity).get::<Timeout>().is_some(),
-                "orphaned row 0 should carry a timeout"
+                world.entity(entity).get::<ChildOf>().is_some(),
+                "an empty display scan must retain the baseline and its display"
             );
             state.add_display(
                 TEST_DISPLAY_ID,

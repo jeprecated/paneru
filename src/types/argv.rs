@@ -48,6 +48,7 @@ pub fn parse_command(argv: &[&str]) -> Result<Command> {
         "mouse" => Command::Mouse(parse_mouse_move(&argv[1..])?),
         "quit" => Command::Quit,
         "restart" => Command::Restart,
+        "reload" => Command::Reload,
         _ => return Err(ParseError::new(format!("unhandled command '{argv:?}'"))),
     })
 }
@@ -167,6 +168,7 @@ impl Command {
             }
             Command::Quit => vec!["quit".to_string()],
             Command::Restart => vec!["restart".to_string()],
+            Command::Reload => vec!["reload".to_string()],
             Command::PrintState => vec!["printstate".to_string()],
             Command::Lua(_) | Command::Layout(_) => return None,
         };
@@ -288,6 +290,7 @@ mod tests {
         for command in [
             Command::Quit,
             Command::Restart,
+            Command::Reload,
             Command::PrintState,
             Command::Mouse(MouseMove::ToNextDisplay),
         ] {

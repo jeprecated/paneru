@@ -47,6 +47,7 @@ pub mod layout;
 pub mod layout_ops;
 pub mod mouse;
 pub mod params;
+pub(crate) mod reload;
 pub(crate) mod restore;
 pub mod script_state;
 pub mod scroll;
@@ -72,6 +73,7 @@ pub fn register_systems(app: &mut bevy::app::App) {
     const CLOSED_WINDOW_CHECK_FREQ: Duration = Duration::from_secs(1);
     const LOW_POWER_MODE_CHECK: Duration = Duration::from_mins(1);
     const APP_OBSERVABILITY_CHECK_FREQ: Duration = Duration::from_millis(200);
+    reload::register(app);
 
     let not_swiping = |scrolling: Query<&Scrolling, With<ActiveWorkspaceMarker>>| {
         scrolling
@@ -135,7 +137,8 @@ pub fn register_systems(app: &mut bevy::app::App) {
         Update,
         (
             (
-                triggers::apply_window_defaults,
+                triggers::apply_window_defaults
+                    .run_if(|added: Query<(), Added<Window>>| !added.is_empty()),
                 systems::detect_tabbed_windows.run_if(native_tabs_enabled),
                 triggers::apply_window_positions,
             )
