@@ -14,6 +14,7 @@ use tracing::{Level, instrument, trace};
 
 use crate::config::Config;
 use crate::ecs::params::Windows;
+use crate::ecs::window_geometry::DisplayConstrainedMarker;
 use crate::ecs::workspace::SnapStripMarker;
 use crate::ecs::{
     ActiveWorkspaceMarker, Bounds, DockPosition, EnsureVisibleMarker, Initializing, LayoutPosition,
@@ -36,6 +37,58 @@ pub struct LayoutEventsPlugin;
 /// corner, which keeps a small sliver on screen: macOS reassigns a window whose
 /// frame has left the display entirely to whichever display it landed on.
 pub(crate) const PARKED_STRIP_SLIVER: i32 = 10;
+
+/// Keep hidden virtual-row windows away from neighboring displays by parking
+/// them along an exposed edge of their own display.
+/// Keep a sliver on the owner so `WindowServer` retains its Space assignment.
+fn parking_origin(frame: IRect, viewport: IRect, neighbors: &[IRect]) -> Option<Origin> {
+    let overlap = |rect: IRect| -> i64 {
+        neighbors
+            .iter()
+            .map(|neighbor| {
+                let intersection = rect.intersect(*neighbor);
+                i64::from(intersection.width().max(0)) * i64::from(intersection.height().max(0))
+            })
+            .sum()
+    };
+    if overlap(frame) == 0 {
+        return None;
+    }
+    let size = frame.size();
+    let left = viewport.min.x - size.x + PARKED_STRIP_SLIVER;
+    let right = viewport.max.x - PARKED_STRIP_SLIVER;
+    let top = viewport.min.y - size.y + PARKED_STRIP_SLIVER;
+    let bottom = viewport.max.y - PARKED_STRIP_SLIVER;
+    // A fixed slot, independent of the scrolling column's current x. Moving
+    // the parking slot during a scroll made hidden windows jump every frame.
+    let aligned = clamp_origin_to_viewport(viewport.min, size, viewport);
+    [
+        Origin::new(aligned.x, bottom),
+        Origin::new(aligned.x, top),
+        Origin::new(left, aligned.y),
+        Origin::new(right, aligned.y),
+        Origin::new(right, bottom),
+        Origin::new(left, bottom),
+        Origin::new(right, top),
+        Origin::new(left, top),
+    ]
+    .into_iter()
+    .min_by_key(|origin| overlap(IRect::from_corners(*origin, *origin + size)))
+}
+
+fn constrained_origin(frame: IRect, viewport: IRect, neighbors: &[IRect]) -> Option<Origin> {
+    let spills = neighbors.iter().any(|neighbor| {
+        let intersection = frame.intersect(*neighbor);
+        intersection.width() > 0 && intersection.height() > 0
+    });
+    spills.then(|| {
+        if frame.min.y >= viewport.max.y - PARKED_STRIP_SLIVER {
+            parking_origin(frame, viewport, neighbors).unwrap_or(frame.min)
+        } else {
+            clamp_origin_to_viewport(frame.min, frame.size(), viewport)
+        }
+    })
+}
 
 /// A strip, its entity, origin, display, whether it's the active one, and the
 /// offset it is animating toward if a move is already in flight.
@@ -1119,7 +1172,10 @@ fn binpack_heights(heights: &[i32], min_height: i32, total_height: i32) -> Optio
 
 /// Watches for size changes to windows and if they are changed, signals to the layout strip.
 #[instrument(level = Level::DEBUG, skip_all)]
-fn layout_sizes_changed(changed_sizes: ResizedWindows, workspaces: Query<&mut LayoutStrip>) {
+pub(crate) fn layout_sizes_changed(
+    changed_sizes: ResizedWindows,
+    workspaces: Query<&mut LayoutStrip>,
+) {
     let changed_entities = changed_sizes.iter().collect::<EntityHashSet>();
     workspaces.into_iter().for_each(|mut strip| {
         if strip_has_changed_window(&strip, &changed_entities) {
@@ -1558,10 +1614,13 @@ fn insert_stack_item_window_contexts(
 /// Reacts to changes of logical window layout in the strip and any have been changed, reposition
 /// the layout strip against the current display viewport.
 #[instrument(level = Level::DEBUG, skip_all)]
-fn position_layout_windows(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn position_layout_windows(
     positioned_windows: RepositionedWindows,
     workspaces: StripsForWindowPositioning,
     snap_guards: Query<&SnapStripMarker>,
+    constrained_windows: Query<(), With<DisplayConstrainedMarker>>,
+    animating_strips: Query<(), (With<LayoutStrip>, With<RepositionMarker>)>,
     displays: DisplayViewports,
     config: Res<Config>,
     mut commands: Commands,
@@ -1650,6 +1709,26 @@ fn position_layout_windows(
             frame.max.y = park_row + height;
         }
 
+        let neighbors = displays
+            .iter()
+            .filter(|(other, _)| other.id() != display.id())
+            .map(|(other, _)| other.bounds())
+            .collect::<Vec<_>>();
+        // Physical overflow stays inside its owning display while logical
+        // columns keep scrolling. Hidden virtual rows use exposed-edge slots.
+        let owner = workspaces
+            .iter()
+            .find(|(_, strip, _, _, _)| strip.contains(entity));
+        let strip_animating =
+            owner.is_some_and(|(entity, _, _, _, _)| animating_strips.contains(entity));
+        let safe_origin = constrained_origin(frame, viewport, &neighbors);
+        if let Some(origin) = safe_origin {
+            frame = IRect::from_corners(origin, origin + frame.size());
+            commands.entity(entity).insert(DisplayConstrainedMarker);
+        } else if constrained_windows.contains(entity) {
+            commands.entity(entity).remove::<DisplayConstrainedMarker>();
+        }
+
         if bounds.0 != frame.size() {
             bounds.0 = frame.size();
         }
@@ -1680,6 +1759,9 @@ fn position_layout_windows(
             // restore-driven, since its last position can land close enough
             // to its target. See `SnapStripMarker`.
             if context.swiping
+                // The strip already supplies the animation. A second lerp on
+                // every window chased its moving target and made scrolling lag.
+                || strip_animating
                 || context.snap_settling
                 || offscreen_move && !config.virtual_workspace_animations()
             {
@@ -1745,6 +1827,14 @@ mod tests {
 
     #[test]
     fn orphaned_window_does_not_block_other_display_positions() {
+        fn destination(world: &World, entity: Entity) -> Origin {
+            // Recovery can snap, while ordinary layout changes can animate.
+            world.get::<RepositionMarker>(entity).map_or_else(
+                || world.get::<Position>(entity).unwrap().0,
+                |marker| marker.0,
+            )
+        }
+
         use bevy::ecs::change_detection::DetectChangesMut;
 
         use crate::tests::{EXT_WORKSPACE_ID, TEST_WORKSPACE_ID, find_window_entity};
@@ -1788,11 +1878,8 @@ mod tests {
         harness.world().run_system(layout_system).unwrap();
 
         assert_eq!(
-            harness
-                .world()
-                .get::<RepositionMarker>(survivor)
-                .map(|marker| marker.0),
-            Some(Origin::new(80, 20)),
+            destination(harness.world(), survivor),
+            Origin::new(80, 20),
             "an orphaned window must not stop another display's layout update"
         );
 
@@ -1833,12 +1920,61 @@ mod tests {
         harness.world().run_system(layout_system).unwrap();
 
         assert_eq!(
-            harness
-                .world()
-                .get::<RepositionMarker>(survivor)
-                .map(|marker| marker.0),
-            Some(Origin::new(120, 20)),
+            destination(harness.world(), survivor),
+            Origin::new(120, 20),
             "a stale display parent must not stop another display's layout update"
+        );
+    }
+
+    #[test]
+    fn scrolling_preserves_size_and_moves_continuously_at_shared_edge() {
+        let viewport = IRect::new(0, 20, 1000, 800);
+        let neighbor = IRect::new(-1000, 0, 0, 800);
+        let size = Size::new(400, 700);
+        for x in -350..=50 {
+            let frame = IRect::from_corners(Origin::new(x, 20), Origin::new(x, 20) + size);
+            let origin = constrained_origin(frame, viewport, &[neighbor]).unwrap_or(frame.min);
+            assert_eq!(origin, Origin::new(x.max(0), 20));
+            assert_eq!(
+                IRect::from_corners(origin, origin + size)
+                    .intersect(neighbor)
+                    .width(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn parking_slot_is_fixed_while_logical_column_scrolls() {
+        let viewport = IRect::new(0, 20, 1000, 800);
+        let neighbor = IRect::new(-1000, 0, 0, 800);
+        let size = Size::new(400, 700);
+        let first = parking_origin(
+            IRect::from_corners(Origin::new(-300, 20), Origin::new(100, 720)),
+            viewport,
+            &[neighbor],
+        );
+        for x in [-399, -250, -100, -1] {
+            let frame = IRect::from_corners(Origin::new(x, 20), Origin::new(x, 20) + size);
+            assert_eq!(parking_origin(frame, viewport, &[neighbor]), first);
+        }
+    }
+
+    #[test]
+    fn hidden_workspace_stays_parked_away_from_shared_edge() {
+        let viewport = IRect::new(0, 20, 1000, 800);
+        let neighbor = IRect::new(1000, 0, 2000, 800);
+        let frame = IRect::new(990, 790, 1390, 1490);
+        let origin = constrained_origin(frame, viewport, &[neighbor]).unwrap();
+        assert!(
+            origin.y >= viewport.max.y - PARKED_STRIP_SLIVER
+                || origin.y + frame.height() <= viewport.min.y + PARKED_STRIP_SLIVER
+        );
+        assert_eq!(
+            IRect::from_corners(origin, origin + frame.size())
+                .intersect(neighbor)
+                .width(),
+            0
         );
     }
 

@@ -247,6 +247,14 @@ window_focus_west = "cmd - h"
 window_resize = ["alt - r", "ctrl - r"]
 ```
 
+### Multiple displays
+
+Paneru controls native windows through Accessibility and cannot clip them at a
+display boundary like Niri's compositor. Overflowing main-display windows stay
+inside their own display while their logical columns scroll; background windows
+can overlap. A window wider or taller than its display cannot fit inside it.
+Hidden virtual rows use exposed-edge parking to retain their display ownership.
+
 ### Virtual workspaces (Experimental)
 
 Paneru allows having virtual spaces inside of the native macOS workspace.

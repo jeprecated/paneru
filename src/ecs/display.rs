@@ -117,6 +117,7 @@ fn display_change_handler(
 /// macOS may report an empty or incomplete display list during reconfiguration;
 /// applying that transient list would orphan every workspace. A successful
 /// scan refreshes both display ownership and the positions of its strips.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn reconcile_displays(
     mut messages: MessageReader<Event>,
     workspaces: Query<(&LayoutStrip, Entity, Option<&ChildOf>)>,
@@ -173,7 +174,8 @@ pub(crate) fn reconcile_displays(
             state.pending = Some(Timer::new(DISPLAY_RETRY_DELAY, TimerMode::Once));
             return;
         }
-        warn!("Display list is still incomplete after retries; applying the latest scan");
+        warn!("Display list is still incomplete; retaining the existing layouts");
+        return;
     }
 
     let previous_bounds: HashMap<Entity, IRect> = displays
@@ -243,7 +245,7 @@ pub(crate) fn reconcile_displays(
 /// Rebase each strip onto its current display and ask the layout and OS writers
 /// to replay window frames. This also covers wakeups where macOS moved windows
 /// without changing the reported display geometry.
-fn refresh_display_layout(world: &mut World, previous_parents: &HashMap<Entity, IRect>) {
+pub(crate) fn refresh_display_layout(world: &mut World, previous_parents: &HashMap<Entity, IRect>) {
     let strips = world
         .query_filtered::<Entity, With<LayoutStrip>>()
         .iter(world)
@@ -254,6 +256,7 @@ fn refresh_display_layout(world: &mut World, previous_parents: &HashMap<Entity, 
         .next();
 
     for strip_entity in strips {
+        crate::ecs::workspace::spawn_snap_strip_guard(strip_entity, &mut world.commands());
         refresh_strip_layout(
             world,
             strip_entity,
@@ -519,7 +522,11 @@ fn read_display_properties_trigger(
     }
 
     let dock = read_screen_property(&screens, display_id, |screen| {
-        let visible_frame = irect_from(screen.visibleFrame());
+        let visible_frame = cocoa_visible_frame_to_cg(
+            display.bounds().min - crate::manager::Origin::new(0, display.menubar_height()),
+            irect_from(screen.frame()),
+            irect_from(screen.visibleFrame()),
+        );
         display.locate_dock(&visible_frame)
     });
     if let Some(dock) = dock {
@@ -532,5 +539,52 @@ fn read_display_properties_trigger(
     if let Some(config) = config {
         let height = config.menubar_height();
         display.set_menubar_height_override(height);
+    }
+}
+
+/// Cocoa is Y-up; derive CG coordinates relative to this screen's raw origin.
+/// Comparing Cocoa's absolute Y with CG's absolute Y misidentifies the Dock on
+/// vertically arranged displays and reserves a large, spurious bottom margin.
+fn cocoa_visible_frame_to_cg(
+    origin: crate::manager::Origin,
+    screen: IRect,
+    visible: IRect,
+) -> IRect {
+    IRect::from_corners(
+        origin
+            + crate::manager::Origin::new(
+                visible.min.x - screen.min.x,
+                screen.max.y - visible.max.y,
+            ),
+        origin
+            + crate::manager::Origin::new(
+                visible.max.x - screen.min.x,
+                screen.max.y - visible.min.y,
+            ),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ecs::DockPosition, manager::Origin};
+
+    #[test]
+    fn dock_insets_follow_each_screens_coordinate_system() {
+        for y in [-1200, 0, 768] {
+            let display = Display::new(1, IRect::new(1024, y, 2944, y + 1200), 20);
+            let screen = IRect::new(1024, 768 - y - 1200, 2944, 768 - y);
+            let visible = IRect::new(
+                screen.min.x,
+                screen.min.y + 60,
+                screen.max.x,
+                screen.max.y - 20,
+            );
+            let cg = cocoa_visible_frame_to_cg(Origin::new(1024, y), screen, visible);
+            assert!(matches!(display.locate_dock(&cg), DockPosition::Bottom(60)));
+            let visible = IRect::new(screen.min.x, screen.min.y, screen.max.x, screen.max.y - 20);
+            let cg = cocoa_visible_frame_to_cg(Origin::new(1024, y), screen, visible);
+            assert!(matches!(display.locate_dock(&cg), DockPosition::Hidden));
+        }
     }
 }
