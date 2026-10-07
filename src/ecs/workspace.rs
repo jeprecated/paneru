@@ -90,13 +90,15 @@ impl Plugin for WorkspaceEventsPlugin {
         app.add_systems(
             PreUpdate,
             (switch_virtual_workspace_bind, move_virtual_workspace_bind)
-                .run_if(super::supplementary::scrolling_display),
+                .run_if(super::supplementary::scrolling_display)
+                .in_set(super::sleep::LayoutActivity),
         );
         app.add_systems(
             PreUpdate,
             find_orphaned_workspaces
                 .after(crate::ecs::display::reconcile_displays)
-                .run_if(on_timer(DISPLAY_CHANGE_CHECK_FREQ)),
+                .run_if(on_timer(DISPLAY_CHANGE_CHECK_FREQ))
+                .in_set(super::sleep::LayoutActivity),
         );
         app.add_systems(
             Update,
@@ -108,9 +110,13 @@ impl Plugin for WorkspaceEventsPlugin {
                 show_active_workspace,
                 handle_virtual_window_moves,
                 detect_moved_windows.run_if(not(resource_exists::<Initializing>)),
-            ),
+            )
+                .in_set(super::sleep::LayoutActivity),
         );
-        app.add_systems(PostUpdate, workspace_destroyed_handler);
+        app.add_systems(
+            PostUpdate,
+            workspace_destroyed_handler.in_set(super::sleep::LayoutActivity),
+        );
         app.add_observer(cleanup_active_workspace_marker)
             .add_observer(cleanup_selected_space_marker);
     }
@@ -587,7 +593,7 @@ fn find_orphaned_workspaces(
 
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn cleanup_unordered_windows(
-    windows: Query<&Window>,
+    windows: Query<(&Window, Has<super::window_geometry::RecentDisplayTransfer>)>,
     workspaces: Query<&LayoutStrip>,
     window_manager: Res<WindowManager>,
     mut commands: Commands,
@@ -600,7 +606,8 @@ pub(crate) fn cleanup_unordered_windows(
                 .into_iter()
                 .filter(|entity| !strip.tabbed(*entity))
         })
-        .filter_map(|entity| windows.get(entity).ok());
+        .filter_map(|entity| windows.get(entity).ok())
+        .filter_map(|(window, transferring)| (!transferring).then_some(window));
 
     for window in windows {
         let window_id = window.id();

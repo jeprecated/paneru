@@ -240,7 +240,8 @@ impl Plugin for LayoutEventsPlugin {
                     .after(super::systems::finish_setup)
                     .after(super::triggers::apply_window_positions)
                     .before(super::workspace::show_active_workspace)
-                    .run_if(not(resource_exists::<Initializing>)),
+                    .run_if(not(resource_exists::<Initializing>))
+                    .in_set(super::sleep::LayoutActivity),
             ),
         );
     }
@@ -922,6 +923,11 @@ impl LayoutStrip {
 
     pub fn all_columns(&self) -> Vec<Entity> {
         self.columns.iter().filter_map(Column::top).collect()
+    }
+
+    /// Preserve columns and virtual rows when macOS replaces a native Space.
+    pub(crate) fn set_workspace_id(&mut self, id: WorkspaceId) {
+        self.id = id;
     }
 
     pub fn id(&self) -> WorkspaceId {

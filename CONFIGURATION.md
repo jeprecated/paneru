@@ -285,6 +285,13 @@ Hidden virtual rows use exposed-edge parking to retain their display ownership.
 The supplementary window fills the usable area, preserving the menu bar and
 Dock rather than creating a native fullscreen Space.
 
+When the Mac sleeps, Paneru retains its rows, column order, scrolling offsets,
+window sizes, and focused window. After wake it waits for display and window
+data to settle before restoring those layouts, including the supplementary
+window. If macOS replaces a native Space ID, its existing rows are reattached
+to the replacement instead of being rebuilt. Recovery normally takes about
+1–2 seconds; a missing monitor gets a four-second reconnection grace period.
+
 ### Virtual workspaces (Experimental)
 
 Paneru allows having virtual spaces inside of the native macOS workspace.

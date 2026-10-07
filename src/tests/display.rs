@@ -1093,7 +1093,7 @@ fn test_init_keeps_windows_on_their_real_displays() {
 /// and its workspace is orphaned.
 #[test]
 fn test_wake_reconciles_unplugged_display() {
-    let harness = TestHarness::new().with_display(
+    let mut harness = TestHarness::new().with_display(
         EXT_DISPLAY_ID,
         IRect::new(0, -EXT_DISPLAY_HEIGHT, EXT_DISPLAY_WIDTH, 0),
         vec![EXT_WORKSPACE_ID],
@@ -1107,45 +1107,23 @@ fn test_wake_reconciles_unplugged_display() {
         .mock_state
         .spawn_window(TEST_PROCESS_ID, EXT_WORKSPACE_ID, 100, ext_frame);
 
-    let commands = vec![
-        Event::MenuOpened { window_id: 100 },
-        Event::Command {
-            command: Command::PrintState,
-        },
-        Event::SystemWoke { msg: String::new() },
-    ];
-
+    harness.advance(Duration::from_secs(1));
+    harness.mock_state.remove_display(EXT_DISPLAY_ID);
     harness
-        .on_iteration(1, |world, state| {
-            let displays = world
-                .query_filtered::<Entity, With<Display>>()
-                .iter(world)
-                .count();
-            assert_eq!(displays, 2, "should start with two displays");
-
-            // Unplug the external display behind paneru's back — no
-            // DisplayRemoved event is sent, mimicking a wake-from-sleep.
-            state.remove_display(EXT_DISPLAY_ID);
-        })
-        .on_iteration(2, |world, _state| {
-            let displays = world
-                .query_filtered::<Entity, With<Display>>()
-                .iter(world)
-                .count();
-            assert_eq!(displays, 1, "reconcile should despawn the vanished display");
-
-            // The external display's workspace must be orphaned, not lost.
-            let orphan = world
-                .query::<(&LayoutStrip, Option<&ChildOf>, Has<Timeout>)>()
-                .iter(world)
-                .find(|(strip, _, _)| strip.id() == EXT_WORKSPACE_ID)
-                .map(|(_, child, timeout)| (child.is_some(), timeout));
-            let (has_parent, has_timeout) =
-                orphan.expect("external workspace strip should still exist");
-            assert!(!has_parent, "orphaned workspace should have no parent");
-            assert!(has_timeout, "orphaned workspace should carry a timeout");
-        })
-        .run(commands);
+        .world()
+        .write_message(Event::SystemWoke { msg: String::new() });
+    harness.advance(Duration::from_secs(5));
+    let world = harness.world();
+    assert_eq!(world.query::<&Display>().iter(world).count(), 1);
+    let (_, parent) = world
+        .query::<(&LayoutStrip, Option<&ChildOf>)>()
+        .iter(world)
+        .find(|(strip, _)| strip.id() == EXT_WORKSPACE_ID)
+        .unwrap();
+    assert!(
+        parent.is_none(),
+        "removed display's rows should remain available for reconnection"
+    );
 }
 
 #[test]
@@ -1377,7 +1355,7 @@ fn test_wake_reapplies_window_frame_without_geometry_change() {
     harness
         .world()
         .write_message::<Event>(Event::SystemWoke { msg: String::new() });
-    harness.advance(Duration::from_secs(1));
+    harness.advance(Duration::from_secs(2));
 
     let restored = harness
         .world()

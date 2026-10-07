@@ -92,6 +92,7 @@ struct MockStateInner {
     /// Windows the app keeps out of its accessibility window list while the
     /// window server still reports them on screen: a background native tab.
     background_tabs: HashSet<WinID>,
+    unavailable_spaces: HashSet<WorkspaceId>,
 }
 
 #[derive(Clone)]
@@ -113,6 +114,7 @@ impl MockState {
                 stale_window_ids: HashMap::new(),
                 unordered_windows: HashSet::new(),
                 background_tabs: HashSet::new(),
+                unavailable_spaces: HashSet::new(),
             })),
         }
     }
@@ -230,6 +232,15 @@ impl MockState {
                 workspaces,
             },
         );
+    }
+
+    pub(crate) fn set_space_unavailable(&self, space: WorkspaceId, unavailable: bool) {
+        let mut inner = self.inner.force_write();
+        if unavailable {
+            inner.unavailable_spaces.insert(space);
+        } else {
+            inner.unavailable_spaces.remove(&space);
+        }
     }
 
     pub fn set_display_bounds(&self, id: u32, bounds: IRect) {
@@ -780,6 +791,13 @@ impl MockState {
         let s = self.clone();
         wm.expect_windows_in_workspace()
             .returning(move |workspace_id| {
+                if s.inner
+                    .force_read()
+                    .unavailable_spaces
+                    .contains(&workspace_id)
+                {
+                    return Err(Error::InvalidWindow);
+                }
                 let mut windows = s
                     .inner
                     .force_read()
