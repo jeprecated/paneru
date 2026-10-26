@@ -18,7 +18,7 @@ use objc2_core_graphics::CGDirectDisplayID;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::time::Duration;
-use tracing::{Level, debug, error, instrument, warn};
+use tracing::{Level, debug, error, info, instrument, warn};
 
 use crate::commands::Command;
 use crate::config::Config;
@@ -162,9 +162,20 @@ pub(crate) fn reconcile_displays(
     sleeping: Option<Res<super::sleep::Sleeping>>,
     waking: Option<Res<super::sleep::WakeRecovery>>,
 ) {
-    if sleeping.is_some() || waking.is_some() {
+    if sleeping.is_some() {
         messages.clear();
         state.pending = None;
+        return;
+    }
+    if waking.is_some() {
+        messages.clear();
+        // Wake recovery's stable snapshot can still precede WindowServer's
+        // final topology. Keep a bounded verification armed even when every
+        // configuration callback arrived while recovery was blocking layouts.
+        state.pending = Some(Timer::new(DISPLAY_SETTLE_DELAY, TimerMode::Once));
+        state.retries_left = DISPLAY_RETRIES;
+        state.verify_again = true;
+        state.reload = false;
         return;
     }
     let needs_reconcile = messages.read().fold(false, |changed, event| {
@@ -232,6 +243,10 @@ pub(crate) fn reconcile_displays(
         return;
     }
 
+    info!(
+        displays = ?present_displays.iter().map(|(id, (display, spaces))| (*id, display.bounds(), spaces)).collect::<Vec<_>>(),
+        "Reconciled display topology"
+    );
     commands.run_system_cached_with(
         apply_display_snapshot,
         present_displays.into_values().collect(),
@@ -609,7 +624,7 @@ fn refresh_strip_layout(
         // Carry the user's width fraction to the new screen before the size
         // writer derives a new ratio from it. Replaying the old pixel width
         // first permanently reinterpreted it against the smaller display.
-        if previous_bounds.is_some_and(|bounds| bounds.width() != display_bounds.width())
+        if previous_bounds.is_none_or(|bounds| bounds.width() != display_bounds.width())
             && world
                 .get::<super::supplementary::SupplementaryWindow>(window)
                 .is_none()

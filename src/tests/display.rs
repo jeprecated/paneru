@@ -1113,6 +1113,12 @@ fn test_late_space_rehome_reapplies_window_frame() {
         ),
     );
     harness.advance(Duration::from_millis(500));
+    let window_entity = find_window_entity(100, harness.world());
+    let width_ratio = harness
+        .world()
+        .get::<crate::ecs::WidthRatio>(window_entity)
+        .unwrap()
+        .0;
     harness.mock_state.remove_display(EXT_DISPLAY_ID);
     harness
         .world()
@@ -1146,6 +1152,11 @@ fn test_late_space_rehome_reapplies_window_frame() {
     let main = world.query::<(&Display, Entity)>().single(world).unwrap().1;
     assert_eq!(external_parent, main);
     let window_entity = find_window_entity(100, world);
+    assert_eq!(
+        world.get::<crate::ecs::Bounds>(window_entity).unwrap().0.x,
+        crate::util::round_px(width_ratio * f64::from(TEST_DISPLAY_WIDTH)),
+        "a rescued lane must restore its width fraction on the new display"
+    );
     assert!(world.get::<Window>(window_entity).unwrap().frame().min.y >= TEST_MENUBAR_HEIGHT);
 }
 

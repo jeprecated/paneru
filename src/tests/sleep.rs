@@ -34,6 +34,91 @@ fn two_displays() -> TestHarness {
 }
 
 #[test]
+fn wake_verifies_late_monitor_removal_without_another_notification() {
+    let mut harness = two_displays();
+    harness.advance(Duration::from_secs(1));
+    let entity = find_window_entity(0, harness.world());
+    let ratio = harness
+        .world()
+        .get::<crate::ecs::WidthRatio>(entity)
+        .unwrap()
+        .0;
+    harness.world().write_message(Event::SystemWillSleep);
+    harness.advance(Duration::from_millis(50));
+    harness
+        .world()
+        .write_message(Event::SystemWoke { msg: String::new() });
+    // Both displays initially look stable. The only configuration callback
+    // arrives during recovery, before WindowServer publishes the final list.
+    harness.world().write_message(Event::DisplayConfigured {
+        display_id: TEST_DISPLAY_ID,
+    });
+    harness.advance(Duration::from_millis(1500));
+    assert!(
+        !harness
+            .world()
+            .contains_resource::<crate::ecs::sleep::WakeRecovery>()
+    );
+    harness.mock_state.remove_display(TEST_DISPLAY_ID);
+    for id in 0..4 {
+        harness.mock_state.update_window(id, |window| {
+            window.workspace_id = EXT_WORKSPACE_ID;
+        });
+    }
+    harness.advance(Duration::from_secs(3));
+    let world = harness.world();
+    assert_eq!(
+        world
+            .query::<&crate::manager::Display>()
+            .iter(world)
+            .count(),
+        1
+    );
+    crate::assert_on_workspace!(world, 0, EXT_WORKSPACE_ID);
+    assert_eq!(
+        world.get::<Bounds>(entity).unwrap().0.x,
+        crate::util::round_px(ratio * 800.0)
+    );
+}
+
+#[test]
+fn wake_replays_frames_changed_after_the_initial_recovery() {
+    let mut harness = TestHarness::new().with_windows(2);
+    harness.advance(Duration::from_secs(1));
+    let entity = find_window_entity(0, harness.world());
+    let original = harness.world().get::<Window>(entity).unwrap().frame();
+    harness.world().write_message(Event::SystemWillSleep);
+    harness.advance(Duration::from_millis(50));
+    harness
+        .world()
+        .write_message(Event::SystemWoke { msg: String::new() });
+    harness.advance(Duration::from_millis(1500));
+    assert!(
+        !harness
+            .world()
+            .contains_resource::<crate::ecs::sleep::WakeRecovery>()
+    );
+    harness.mock_state.update_window(0, |window| {
+        window.frame = IRect::new(200, 30, TEST_DISPLAY_WIDTH * 2, 500);
+    });
+    harness
+        .world()
+        .write_message(Event::WindowResized { window_id: 0 });
+    harness
+        .world()
+        .write_message(Event::WindowMoved { window_id: 0 });
+    harness.advance(Duration::from_secs(4));
+    assert_eq!(
+        harness.world().get::<Window>(entity).unwrap().frame(),
+        original
+    );
+    assert_eq!(
+        harness.world().get::<Bounds>(entity).unwrap().0,
+        original.size()
+    );
+}
+
+#[test]
 fn wake_preserves_virtual_rows_and_column_order_when_native_space_is_replaced() {
     let mut harness = two_displays();
     harness.advance(Duration::from_secs(1));
