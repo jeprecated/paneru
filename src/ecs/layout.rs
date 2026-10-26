@@ -523,6 +523,7 @@ impl LayoutStrip {
 
     pub(crate) fn append_strip(&mut self, other: &mut Self) {
         self.columns.append(&mut other.columns);
+        self.tabbed_stacks.extend(other.tabbed_stacks.drain());
     }
 
     /// Replace one window without changing its column, stack or tab position.
@@ -1858,7 +1859,9 @@ mod tests {
         harness.mock_state.add_display(
             TEST_DISPLAY_ID,
             IRect::new(0, 0, TEST_DISPLAY_WIDTH, TEST_DISPLAY_HEIGHT),
-            vec![TEST_WORKSPACE_ID],
+            // A sole remaining Space now provides a safe managed fallback;
+            // keep ownership ambiguous here to exercise orphan handling.
+            vec![TEST_WORKSPACE_ID, TEST_WORKSPACE_ID + 1],
         );
         harness.advance(Duration::from_millis(500));
 

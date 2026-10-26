@@ -1193,7 +1193,12 @@ pub(crate) fn commit_window_size(
                     .find(|display| display.bounds().contains(window.frame().center()))
             });
         if let Some(display) = display {
-            width_ratio.0 = f64::from(size.0.x) / f64::from(display.width());
+            // Keep the precise fraction when a topology change merely rounds
+            // it to pixels. Re-deriving it on every replay lost a pixel on
+            // each laptop/external round trip, even without a user resize.
+            if crate::util::round_px(width_ratio.0 * f64::from(display.width())) != size.0.x {
+                width_ratio.0 = f64::from(size.0.x) / f64::from(display.width());
+            }
         }
         window.resize(size.0);
     }

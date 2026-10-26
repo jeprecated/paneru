@@ -109,7 +109,9 @@ impl Plugin for WorkspaceEventsPlugin {
                 workspace_created_handler,
                 show_active_workspace,
                 handle_virtual_window_moves,
-                detect_moved_windows.run_if(not(resource_exists::<Initializing>)),
+                detect_moved_windows
+                    .run_if(not(resource_exists::<Initializing>))
+                    .run_if(not(resource_exists::<super::display::DisplayReconfiguring>)),
             )
                 .in_set(super::sleep::LayoutActivity),
         );

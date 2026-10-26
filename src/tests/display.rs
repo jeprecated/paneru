@@ -15,6 +15,258 @@ use crate::{assert_not_on_workspace, assert_on_workspace, assert_window_at, asse
 use super::*;
 
 #[test]
+fn test_monitor_round_trip_preserves_lanes_after_native_spaces_disappear() {
+    let mut harness = TestHarness::new()
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-1920, 0, 0, 1200),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |_| {})
+        .with_workspace_window(101, EXT_WORKSPACE_ID, |_| {})
+        .with_workspace_window(102, EXT_WORKSPACE_ID, |_| {})
+        .with_focused_window(100);
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::VirtualMove(Direction::South, MoveFocus::Follow)),
+    });
+    harness.advance(Duration::from_secs(1));
+    // Preserve a vertical stack as well as the lane containing window 100.
+    let stacked = find_window_entity(102, harness.world());
+    harness
+        .world()
+        .query::<&mut LayoutStrip>()
+        .iter_mut(harness.world())
+        .find(|strip| strip.contains(stacked))
+        .unwrap()
+        .stack(stacked)
+        .unwrap();
+    harness.advance(Duration::from_secs(1));
+    for cycle in 0..2 {
+        harness.mock_state.remove_display(EXT_DISPLAY_ID);
+        for id in 100..103 {
+            harness
+                .mock_state
+                .update_window(id, |window| window.workspace_id = TEST_WORKSPACE_ID);
+        }
+        harness.world().write_message(Event::DisplayRemoved {
+            display_id: EXT_DISPLAY_ID,
+        });
+        harness.advance(Duration::from_secs(35));
+        let world = harness.world();
+        for id in 100..103 {
+            let entity = find_window_entity(id, world);
+            assert!(world.get::<crate::ecs::Unmanaged>(entity).is_none());
+            assert!(
+                world
+                    .query::<&LayoutStrip>()
+                    .iter(world)
+                    .any(|strip| strip.id() == TEST_WORKSPACE_ID && strip.contains(entity))
+            );
+        }
+        let replacement = EXT_WORKSPACE_ID + 100 + cycle;
+        harness.mock_state.add_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-1920, 0, 0, 1200),
+            vec![replacement],
+        );
+        for id in 100..103 {
+            harness
+                .mock_state
+                .update_window(id, |window| window.workspace_id = replacement);
+        }
+        harness.world().write_message(Event::DisplayAdded {
+            display_id: EXT_DISPLAY_ID,
+        });
+        harness.advance(Duration::from_secs(4));
+        let world = harness.world();
+        let moved = find_window_entity(100, world);
+        let stacked = find_window_entity(102, world);
+        let rows = world
+            .query::<&LayoutStrip>()
+            .iter(world)
+            .filter(|strip| strip.id() == replacement)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .any(|strip| strip.virtual_index == 1 && strip.contains(moved))
+        );
+        assert!(rows.iter().any(|strip| strip.virtual_index == 0
+            && matches!(strip.first().unwrap(), crate::ecs::layout::Column::Stack(_))
+            && strip.contains(stacked)));
+        assert_window_size!(
+            world,
+            100,
+            TEST_WINDOW_WIDTH,
+            EXT_DISPLAY_HEIGHT - TEST_MENUBAR_HEIGHT
+        );
+        assert_eq!(
+            world
+                .query::<&crate::ecs::display::DisplacedWorkspace>()
+                .iter(world)
+                .count(),
+            0
+        );
+    }
+}
+
+#[test]
+fn test_hotplug_replacement_space_preserves_lanes() {
+    let replacement = TEST_WORKSPACE_ID + 100;
+    TestHarness::new()
+        .with_windows(3)
+        .on_iteration(1, |world, mut state| {
+            assert_eq!(world.query::<&LayoutStrip>().iter(world).count(), 2);
+            state.add_display(
+                TEST_DISPLAY_ID,
+                IRect::new(0, 0, TEST_DISPLAY_WIDTH, TEST_DISPLAY_HEIGHT),
+                vec![TEST_WORKSPACE_ID + 100],
+            );
+            for id in 0..3 {
+                state.update_window(id, |window| window.workspace_id = TEST_WORKSPACE_ID + 100);
+            }
+        })
+        .on_iteration(4, move |world, _| {
+            let entity = find_window_entity(0, world);
+            let rows = world
+                .query::<&LayoutStrip>()
+                .iter(world)
+                .collect::<Vec<_>>();
+            assert_eq!(rows.len(), 2);
+            assert!(rows.iter().all(|strip| strip.id() == replacement));
+            assert!(
+                rows.iter()
+                    .any(|strip| strip.virtual_index == 1 && strip.contains(entity))
+            );
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::Command {
+                command: Command::Window(Operation::VirtualMove(
+                    Direction::South,
+                    MoveFocus::Follow,
+                )),
+            },
+            Event::DisplayConfigured {
+                display_id: TEST_DISPLAY_ID,
+            },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::Command {
+                command: Command::PrintState,
+            },
+        ]);
+}
+
+#[test]
+fn test_display_resize_preserves_width_fraction_without_drift() {
+    TestHarness::new()
+        .with_windows(1)
+        .on_iteration(0, |_, state| {
+            state.set_display_bounds(
+                TEST_DISPLAY_ID,
+                IRect::new(0, 0, TEST_DISPLAY_WIDTH * 2, TEST_DISPLAY_HEIGHT),
+            );
+        })
+        .on_iteration(3, |world, state| {
+            assert_window_size!(
+                world,
+                0,
+                TEST_WINDOW_WIDTH * 2,
+                TEST_DISPLAY_HEIGHT - TEST_MENUBAR_HEIGHT
+            );
+            state.set_display_bounds(
+                TEST_DISPLAY_ID,
+                IRect::new(0, 0, TEST_DISPLAY_WIDTH, TEST_DISPLAY_HEIGHT),
+            );
+        })
+        .on_iteration(6, |world, _| {
+            assert_window_size!(
+                world,
+                0,
+                TEST_WINDOW_WIDTH,
+                TEST_DISPLAY_HEIGHT - TEST_MENUBAR_HEIGHT
+            );
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::DisplayResized {
+                display_id: TEST_DISPLAY_ID,
+            },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::DisplayResized {
+                display_id: TEST_DISPLAY_ID,
+            },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::Command {
+                command: Command::PrintState,
+            },
+        ]);
+}
+
+#[test]
+fn test_supplementary_promotion_preserves_lanes_and_scales_widths_once() {
+    let config: Config = (
+        MainOptions {
+            supplementary_display: Some(TEST_DISPLAY_ID),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    TestHarness::new()
+        .with_config(config)
+        .with_windows(3)
+        .on_iteration(1, |_, mut state| {
+            state.add_display(
+                EXT_DISPLAY_ID,
+                IRect::new(-1920, 0, 0, 1200),
+                vec![EXT_WORKSPACE_ID],
+            );
+        })
+        .on_iteration(4, |world, _| {
+            let hidden = find_window_entity(0, world);
+            let row = world
+                .query::<&LayoutStrip>()
+                .iter(world)
+                .find(|strip| strip.contains(hidden))
+                .unwrap();
+            assert_eq!(row.id(), EXT_WORKSPACE_ID);
+            assert_eq!(row.virtual_index, 1);
+            assert_window_size!(
+                world,
+                0,
+                TEST_WINDOW_WIDTH * EXT_DISPLAY_WIDTH / TEST_DISPLAY_WIDTH,
+                EXT_DISPLAY_HEIGHT - TEST_MENUBAR_HEIGHT
+            );
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 1 },
+            Event::Command {
+                command: Command::Window(Operation::VirtualMove(Direction::South, MoveFocus::Stay)),
+            },
+            Event::DisplayAdded {
+                display_id: EXT_DISPLAY_ID,
+            },
+            Event::Command {
+                command: Command::PrintState,
+            },
+            Event::Command {
+                command: Command::PrintState,
+            },
+        ]);
+}
+
+#[test]
 fn test_scrolling_centers_columns_without_crossing_shared_edge() {
     let config: Config = (
         MainOptions {
@@ -277,20 +529,20 @@ fn test_multi_display_lifecycle() {
 
             let workspace_entity = {
                 world
-                    .query::<(Entity, &LayoutStrip)>()
+                    .query::<(Entity, &crate::ecs::display::DisplacedWorkspace)>()
                     .iter(world)
-                    .find(|(_, strip)| strip.id() == TEST_WORKSPACE_ID)
+                    .find(|(_, home)| home.workspace_id == TEST_WORKSPACE_ID)
                     .unwrap()
                     .0
             };
             let workspace = world.entity(workspace_entity);
             assert!(
-                workspace.get::<Timeout>().is_some(),
-                "orphaned workspace should have a timeout"
+                workspace.get::<Timeout>().is_none(),
+                "a usable fallback workspace should not time out"
             );
             assert!(
-                workspace.get::<ChildOf>().is_none(),
-                "orphaned workspace should have no parent"
+                workspace.get::<ChildOf>().is_some(),
+                "the lane should be usable on the remaining display"
             );
             state.add_display(
                 TEST_DISPLAY_ID,
@@ -668,13 +920,13 @@ fn test_wake_reconciles_unplugged_display() {
     let world = harness.world();
     assert_eq!(world.query::<&Display>().iter(world).count(), 1);
     let (_, parent) = world
-        .query::<(&LayoutStrip, Option<&ChildOf>)>()
+        .query::<(&crate::ecs::display::DisplacedWorkspace, Option<&ChildOf>)>()
         .iter(world)
-        .find(|(strip, _)| strip.id() == EXT_WORKSPACE_ID)
+        .find(|(home, _)| home.workspace_id == EXT_WORKSPACE_ID)
         .unwrap();
     assert!(
-        parent.is_none(),
-        "removed display's rows should remain available for reconnection"
+        parent.is_some(),
+        "removed display's rows should be usable on the laptop while retaining their home"
     );
 }
 
@@ -837,11 +1089,19 @@ fn test_unplug_rehomes_workspace_and_window_on_surviving_display() {
 
 #[test]
 fn test_late_space_rehome_reapplies_window_frame() {
-    let mut harness = TestHarness::new().with_display(
-        EXT_DISPLAY_ID,
-        IRect::new(0, -EXT_DISPLAY_HEIGHT, EXT_DISPLAY_WIDTH, 0),
-        vec![EXT_WORKSPACE_ID],
-    );
+    // Multiple possible native Spaces: wait for OS ownership rather than
+    // guessing which laptop Space should inherit the external lane.
+    let mut harness = TestHarness::new()
+        .with_display(
+            TEST_DISPLAY_ID,
+            IRect::new(0, 0, TEST_DISPLAY_WIDTH, TEST_DISPLAY_HEIGHT),
+            vec![TEST_WORKSPACE_ID, TEST_WORKSPACE_ID + 1],
+        )
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(0, -EXT_DISPLAY_HEIGHT, EXT_DISPLAY_WIDTH, 0),
+            vec![EXT_WORKSPACE_ID],
+        );
     let ext_origin = Origin::new(0, -EXT_DISPLAY_HEIGHT + TEST_MENUBAR_HEIGHT);
     harness.mock_state.spawn_window(
         TEST_PROCESS_ID,

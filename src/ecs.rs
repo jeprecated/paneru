@@ -180,7 +180,8 @@ pub fn register_systems(app: &mut bevy::app::App) {
                 systems::window_moved_update_frame,
             )
                 .chain()
-                .run_if(not_swiping),
+                .run_if(not_swiping)
+                .run_if(not(resource_exists::<display::DisplayReconfiguring>)),
             systems::cleanup_on_exit,
             restore::tick_restore_grace,
             state::periodic_state_save.run_if(on_timer(Duration::from_mins(5))),

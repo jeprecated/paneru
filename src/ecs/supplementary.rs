@@ -6,7 +6,7 @@ use crate::{
     ecs::{
         Bounds, DockPosition, FocusedMarker, Initializing, LayoutPosition, Position,
         RepositionMarker, ResizeMarker, SelectedVirtualMarker, SpawnCommandsExt, Unmanaged,
-        layout::LayoutStrip, params::ActiveDisplay,
+        WidthRatio, layout::LayoutStrip, params::ActiveDisplay,
     },
     events::Event,
     manager::{Display, Size, Window, WindowManager},
@@ -37,6 +37,7 @@ pub(crate) fn register(app: &mut App) {
         Update,
         reconcile
             .after(super::systems::finish_setup)
+            .after(super::reload::realign)
             .before(super::layout::layout_sizes_changed)
             .run_if(needs_reconcile)
             .run_if(bevy::ecs::schedule::common_conditions::not(
@@ -91,7 +92,15 @@ fn reconcile(
         &ChildOf,
         Has<SelectedVirtualMarker>,
     )>,
-    mut windows: Query<(Entity, &mut Bounds, Option<&SupplementaryWindow>), With<Window>>,
+    mut windows: Query<
+        (
+            Entity,
+            &mut Bounds,
+            &WidthRatio,
+            Option<&SupplementaryWindow>,
+        ),
+        With<Window>,
+    >,
     wm: Res<WindowManager>,
     focused: Query<Entity, With<FocusedMarker>>,
     mut commands: Commands,
@@ -117,7 +126,7 @@ fn reconcile(
     }
 
     // Restore original scrolling dimensions when display roles or topology change.
-    for (entity, mut bounds, saved) in &mut windows {
+    for (entity, mut bounds, _, saved) in &mut windows {
         let Some(saved) = saved else {
             continue;
         };
@@ -195,28 +204,65 @@ fn reconcile(
         if Some(entity) == occupant {
             continue;
         }
-        for (_, mut strip, child, _) in &mut strips {
-            if child.parent() == supplementary && strip.contains(entity) {
-                strip.remove(entity);
-            }
-        }
-        if let Ok((_, mut strip, _, _)) = strips.get_mut(destination) {
-            strip.append(entity);
-        }
-        if let Ok((_, mut bounds, saved)) = windows.get_mut(entity) {
-            let width = saved.map_or_else(
-                || {
-                    crate::util::round_px(
-                        f64::from(bounds.0.x) / f64::from(display.width().max(1))
-                            * f64::from(main.width()),
-                    )
-                },
-                |saved| saved.size.x,
+        if let Ok((_, mut bounds, ratio, saved)) = windows.get_mut(entity) {
+            let width = crate::util::round_px(
+                saved.map_or(ratio.0, |saved| saved.width_ratio) * f64::from(main.width()),
             );
             bounds.0 = Size::new(width, main.bounds().height());
         }
         commands.entity(entity).remove::<SupplementaryWindow>();
         super::workspace::spawn_snap_strip_guard(destination, &mut commands);
+    }
+
+    // Turning the laptop back into a supplementary display must carry whole
+    // lanes (including stacks and tabs) to the main display. Appending every
+    // individual window to its active row flattened all virtual workspaces.
+    let sources = strips
+        .iter()
+        .filter(|(_, strip, child, _)| {
+            child.parent() == supplementary
+                && strip
+                    .all_windows()
+                    .iter()
+                    .any(|entity| Some(*entity) != occupant)
+        })
+        .map(|(entity, strip, _, _)| (entity, strip.virtual_index))
+        .collect::<Vec<_>>();
+    for (source, index) in sources {
+        let mut moved = LayoutStrip::new(main_space, index);
+        if let Ok((_, mut strip, _, _)) = strips.get_mut(source) {
+            if let Some(occupant) = occupant {
+                strip.remove(occupant);
+            }
+            moved.append_strip(&mut strip);
+        }
+        if moved.len() == 0 {
+            continue;
+        }
+        let destination = strips
+            .iter()
+            .find(|(_, strip, child, _)| {
+                child.parent() == main_entity
+                    && strip.id() == main_space
+                    && strip.virtual_index == index
+            })
+            .map(|(entity, _, _, _)| entity);
+        if let Some(destination) = destination {
+            if let Ok((_, mut strip, _, _)) = strips.get_mut(destination) {
+                strip.append_strip(&mut moved);
+            }
+        } else {
+            let origin = main.bounds().max - super::layout::PARKED_STRIP_SLIVER;
+            commands.spawn((
+                moved,
+                Position(origin),
+                ChildOf(main_entity),
+                super::workspace::PreviousStripPosition {
+                    origin: main.bounds().min,
+                    focus: None,
+                },
+            ));
+        }
     }
     if let Some(entity) = occupant {
         for (strip_entity, mut strip, child, _) in &mut strips {
@@ -229,7 +275,7 @@ fn reconcile(
         {
             strip.append(entity);
         }
-        if let Ok((_, mut bounds, saved)) = windows.get_mut(entity) {
+        if let Ok((_, mut bounds, _, saved)) = windows.get_mut(entity) {
             if saved.is_none() {
                 commands.entity(entity).insert(SupplementaryWindow {
                     size: bounds.0,

@@ -243,7 +243,7 @@ fn recover(
     info!("Restoring preserved layouts after wake");
 }
 
-fn remap_spaces(world: &mut World, remaps: &[(WorkspaceId, WorkspaceId)]) {
+pub(crate) fn remap_spaces(world: &mut World, remaps: &[(WorkspaceId, WorkspaceId)]) {
     for &(old, new) in remaps {
         for mut strip in world.query::<&mut LayoutStrip>().iter_mut(world) {
             if strip.id() == old {

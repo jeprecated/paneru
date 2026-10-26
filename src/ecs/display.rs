@@ -1,4 +1,4 @@
-use bevy::app::{App, Plugin, PreUpdate};
+use bevy::app::{App, Plugin, PostUpdate, PreUpdate};
 use bevy::ecs::change_detection::DetectChangesMut;
 use bevy::ecs::component::Component;
 use bevy::ecs::entity::Entity;
@@ -8,7 +8,7 @@ use bevy::ecs::message::MessageReader;
 use bevy::ecs::observer::On;
 use bevy::ecs::query::{Has, With};
 use bevy::ecs::schedule::IntoScheduleConfigs;
-use bevy::ecs::system::{Commands, Local, NonSend, Query, Res};
+use bevy::ecs::system::{Commands, Local, NonSend, Query, Res, RunSystemOnce};
 use bevy::ecs::world::World;
 use bevy::math::IRect;
 use bevy::platform::collections::HashSet;
@@ -25,9 +25,9 @@ use crate::config::Config;
 use crate::ecs::layout::{LayoutStrip, PARKED_STRIP_SLIVER};
 use crate::ecs::workspace::PreviousStripPosition;
 use crate::ecs::{
-    ActiveDisplayMarker, EnsureVisibleMarker, FocusedMarker, LayoutPosition, ManualStripOffset,
-    Position, ReadDisplayProperties, RepositionMarker, SendMessageTrigger, SpawnCommandsExt,
-    Timeout,
+    ActiveDisplayMarker, ActiveWorkspaceMarker, Bounds, EnsureVisibleMarker, FocusedMarker,
+    LayoutPosition, ManualStripOffset, Position, ReadDisplayProperties, RepositionMarker,
+    ResizeMarker, SelectedVirtualMarker, SendMessageTrigger, SpawnCommandsExt, Timeout, WidthRatio,
 };
 use crate::events::Event;
 use crate::manager::{Display, WindowManager, irect_from};
@@ -48,6 +48,30 @@ pub(crate) struct DisplayReconcileState {
     reload: bool,
 }
 
+/// Suppress transient AX geometry and Space ownership while monitors settle.
+#[derive(bevy::prelude::Resource)]
+pub(crate) struct DisplayReconfiguring {
+    until: Duration,
+}
+
+/// Original lane identity while its physical monitor is disconnected.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct DisplacedWorkspace {
+    pub display_id: u32,
+    pub workspace_id: WorkspaceId,
+    pub virtual_index: u32,
+}
+
+fn finish_reconfiguration(
+    recovery: Res<DisplayReconfiguring>,
+    time: Res<Time>,
+    mut commands: Commands,
+) {
+    if time.elapsed() >= recovery.until {
+        commands.remove_resource::<DisplayReconfiguring>();
+    }
+}
+
 pub struct DisplayEventsPlugin;
 
 impl Plugin for DisplayEventsPlugin {
@@ -60,6 +84,12 @@ impl Plugin for DisplayEventsPlugin {
             )
                 .chain()
                 .after(super::systems::pump_events),
+        )
+        .add_systems(
+            PostUpdate,
+            finish_reconfiguration.run_if(
+                bevy::ecs::schedule::common_conditions::resource_exists::<DisplayReconfiguring>,
+            ),
         )
         .add_observer(read_display_properties_trigger)
         .add_observer(cleanup_active_display_marker);
@@ -158,6 +188,9 @@ pub(crate) fn reconcile_displays(
             )
     });
     if needs_reconcile {
+        commands.insert_resource(DisplayReconfiguring {
+            until: time.elapsed() + Duration::from_secs(2),
+        });
         state.pending = Some(Timer::new(DISPLAY_SETTLE_DELAY, TimerMode::Once));
         state.retries_left = DISPLAY_RETRIES;
         state.verify_again = true;
@@ -174,6 +207,9 @@ pub(crate) fn reconcile_displays(
     state.pending = None;
 
     debug!("Reconciling displays against OS after wake / resize / configure");
+    commands.insert_resource(DisplayReconfiguring {
+        until: time.elapsed() + Duration::from_secs(2),
+    });
 
     let present_displays: HashMap<CGDirectDisplayID, _> = window_manager
         .0
@@ -216,6 +252,206 @@ pub(crate) fn reconcile_displays(
 /// Apply one complete display snapshot and rebase existing strip offsets.
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn apply_display_snapshot(
+    bevy::prelude::In(snapshot): bevy::prelude::In<Vec<(Display, Vec<WorkspaceId>)>>,
+    world: &mut World,
+) {
+    rehome_disconnected_workspaces(world, &snapshot);
+    remap_replaced_spaces(world, &snapshot);
+    if let Err(error) = world.run_system_once_with(apply_display_ownership, snapshot) {
+        error!(%error, "Unable to reconcile display ownership");
+    }
+}
+
+/// Keep populated lanes usable on a sole remaining screen, even when macOS
+/// removes their native Space. Retain their home so reconnecting restores the
+/// original lane numbers instead of treating them as new laptop windows.
+#[allow(clippy::too_many_lines)]
+fn rehome_disconnected_workspaces(world: &mut World, snapshot: &[(Display, Vec<WorkspaceId>)]) {
+    let mut strips = world
+        .query::<(
+            Entity,
+            &LayoutStrip,
+            Option<&ChildOf>,
+            Option<&DisplacedWorkspace>,
+        )>()
+        .iter(world)
+        .filter_map(|(entity, strip, child, home)| {
+            let display_id = child
+                .and_then(|child| world.get::<Display>(child.parent()))
+                .map(Display::id)
+                .or_else(|| home.map(|home| home.display_id))?;
+            Some((
+                entity,
+                strip.id(),
+                strip.virtual_index,
+                strip.len(),
+                display_id,
+                home.copied(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    strips.sort_by_key(|(_, space, index, _, display, _)| (*display, *space, *index));
+    // Restore homes before matching replacements on the laptop: both groups
+    // may temporarily share its native Space while the external is absent.
+    for &(entity, _, _, _, _, home) in &strips {
+        let Some(home) = home else {
+            continue;
+        };
+        let Some((_, spaces)) = snapshot
+            .iter()
+            .find(|(display, _)| display.id() == home.display_id)
+        else {
+            continue;
+        };
+        let target = spaces
+            .iter()
+            .find(|space| **space == home.workspace_id)
+            .copied()
+            .or_else(|| (spaces.len() == 1).then(|| spaces[0]));
+        let Some(target) = target else {
+            continue;
+        };
+        if let Some(mut strip) = world.get_mut::<LayoutStrip>(entity) {
+            strip.set_workspace_id(target);
+            strip.virtual_index = home.virtual_index;
+        }
+        world.entity_mut(entity).remove::<DisplacedWorkspace>();
+    }
+    let present_spaces = snapshot
+        .iter()
+        .flat_map(|(_, spaces)| spaces)
+        .collect::<HashSet<_>>();
+    let fallback = match snapshot {
+        [(_, spaces)] if spaces.len() == 1 => Some(spaces[0]),
+        _ => None,
+    };
+    let mut offset = fallback.map_or(0, |space| {
+        strips
+            .iter()
+            .filter(|(_, id, _, _, _, _)| *id == space)
+            .map(|(_, _, index, _, _, _)| index + 1)
+            .max()
+            .unwrap_or(0)
+    });
+    let mut next_offset = offset;
+    let mut group = None;
+    let mut rehomed = false;
+    for (entity, space, index, len, display_id, home) in strips {
+        if home.is_some()
+            || snapshot
+                .iter()
+                .any(|(display, _)| display.id() == display_id)
+        {
+            continue;
+        }
+        world.entity_mut(entity).insert(DisplacedWorkspace {
+            display_id,
+            workspace_id: space,
+            virtual_index: index,
+        });
+        if len > 0
+            && !present_spaces.contains(&space)
+            && let Some(target) = fallback
+            && let Some(mut strip) = world.get_mut::<LayoutStrip>(entity)
+        {
+            if group != Some((display_id, space)) {
+                group = Some((display_id, space));
+                offset = next_offset;
+            }
+            strip.set_workspace_id(target);
+            strip.virtual_index += offset;
+            next_offset = next_offset.max(strip.virtual_index + 1);
+            rehomed = true;
+        }
+    }
+    if rehomed && let Some(space) = fallback {
+        select_rehomed_workspace(world, space);
+    }
+}
+
+/// A fallback combines physical Space groups, but still has only one visible
+/// lane. Keep the active lane and park the other group's formerly visible row.
+fn select_rehomed_workspace(world: &mut World, space: WorkspaceId) {
+    let rows = world
+        .query::<(
+            Entity,
+            &LayoutStrip,
+            Has<ActiveWorkspaceMarker>,
+            Has<SelectedVirtualMarker>,
+        )>()
+        .iter(world)
+        .filter(|(_, strip, _, _)| strip.id() == space)
+        .map(|(entity, strip, active, selected)| (entity, strip.virtual_index, active, selected))
+        .collect::<Vec<_>>();
+    let Some(&(selected, _, _, _)) = rows
+        .iter()
+        .min_by_key(|(_, index, active, selected)| (!active, !selected, *index))
+    else {
+        return;
+    };
+    for (entity, _, _, _) in rows {
+        if entity == selected {
+            world.entity_mut(entity).insert(SelectedVirtualMarker);
+        } else {
+            let origin = world.get::<Position>(entity).map(|position| position.0);
+            world.entity_mut(entity).remove::<SelectedVirtualMarker>();
+            if world.get::<PreviousStripPosition>(entity).is_none()
+                && let Some(origin) = origin
+            {
+                world.entity_mut(entity).insert(PreviousStripPosition {
+                    origin,
+                    focus: None,
+                });
+            }
+        }
+    }
+}
+
+/// A hotplug can replace a native Space without a sleep/wake notification.
+/// Match only a unique replacement on the same display; a Space that is still
+/// present on another monitor is being moved, not replaced.
+fn remap_replaced_spaces(world: &mut World, snapshot: &[(Display, Vec<WorkspaceId>)]) {
+    let all_spaces = snapshot
+        .iter()
+        .flat_map(|(_, spaces)| spaces)
+        .collect::<HashSet<_>>();
+    let previous = world
+        .query::<(&LayoutStrip, &ChildOf)>()
+        .iter(world)
+        .filter_map(|(strip, child)| {
+            world
+                .get::<Display>(child.parent())
+                .map(|display| (display.id(), strip.id()))
+        })
+        .fold(
+            HashMap::<u32, HashSet<WorkspaceId>>::new(),
+            |mut groups, (display, space)| {
+                groups.entry(display).or_default().insert(space);
+                groups
+            },
+        );
+    let mut remaps = Vec::new();
+    for (display, spaces) in snapshot {
+        let Some(previous) = previous.get(&display.id()) else {
+            continue;
+        };
+        let missing = previous
+            .iter()
+            .filter(|space| !all_spaces.contains(space))
+            .collect::<Vec<_>>();
+        let added = spaces
+            .iter()
+            .filter(|space| !previous.contains(*space))
+            .collect::<Vec<_>>();
+        if let ([old], [new]) = (missing.as_slice(), added.as_slice()) {
+            remaps.push((**old, **new));
+        }
+    }
+    super::sleep::remap_spaces(world, &remaps);
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn apply_display_ownership(
     bevy::prelude::In(snapshot): bevy::prelude::In<Vec<(Display, Vec<WorkspaceId>)>>,
     workspaces: Query<(&LayoutStrip, Entity, Option<&ChildOf>)>,
     mut displays: Query<(&mut Display, Entity)>,
@@ -370,6 +606,19 @@ fn refresh_strip_layout(
             .insert(EnsureVisibleMarker { snap: true });
     }
     for window in windows {
+        // Carry the user's width fraction to the new screen before the size
+        // writer derives a new ratio from it. Replaying the old pixel width
+        // first permanently reinterpreted it against the smaller display.
+        if previous_bounds.is_some_and(|bounds| bounds.width() != display_bounds.width())
+            && world
+                .get::<super::supplementary::SupplementaryWindow>(window)
+                .is_none()
+            && let Some(ratio) = world.get::<WidthRatio>(window).map(|ratio| ratio.0)
+            && let Some(mut bounds) = world.get_mut::<Bounds>(window)
+        {
+            bounds.0.x = round_px(ratio * f64::from(display_bounds.width()));
+            world.entity_mut(window).remove::<ResizeMarker>();
+        }
         if let Some(mut layout) = world.get_mut::<LayoutPosition>(window) {
             layout.set_changed();
         }

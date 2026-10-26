@@ -135,7 +135,7 @@ fn scan(
 }
 
 #[allow(clippy::too_many_lines)]
-fn realign(world: &mut World) {
+pub(crate) fn realign(world: &mut World) {
     if !world.resource::<Reloading>().scanned
         || world.resource::<Reloading>().finished
         || world
@@ -146,7 +146,7 @@ fn realign(world: &mut World) {
     {
         return;
     }
-    let preserve_layout = matches!(world.resource::<Reloading>().reason, ReloadReason::Wake);
+    let preserve_layout = !matches!(world.resource::<Reloading>().reason, ReloadReason::Manual);
     let spaces = world
         .query::<&LayoutStrip>()
         .iter(world)
