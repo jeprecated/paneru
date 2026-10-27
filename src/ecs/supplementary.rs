@@ -200,6 +200,17 @@ fn reconcile(
                 .and_then(|(_, strip, _, _)| strip.all_windows().first().copied())
         })
         .or_else(|| members.first().copied());
+    // Borrowed external lanes share the laptop's native Space while unplugged.
+    // Visiting one clears the laptop lane's selection. On reconnect, keep the
+    // surviving occupant in its own lane instead of moving it to empty row 0.
+    let target = occupant
+        .and_then(|occupant| {
+            strips.iter().find_map(|(entity, strip, child, _)| {
+                (child.parent() == supplementary && strip.id() == space && strip.contains(occupant))
+                    .then_some(entity)
+            })
+        })
+        .unwrap_or(target);
     for entity in members {
         if Some(entity) == occupant {
             continue;
@@ -265,6 +276,7 @@ fn reconcile(
         }
     }
     if let Some(entity) = occupant {
+        commands.entity(target).insert(SelectedVirtualMarker);
         for (strip_entity, mut strip, child, _) in &mut strips {
             if child.parent() == supplementary && strip_entity != target && strip.contains(entity) {
                 strip.remove(entity);

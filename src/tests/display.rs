@@ -117,6 +117,76 @@ fn test_hotplug_space_destruction_and_transient_ax_failure_preserve_lanes() {
     supplementary_monitor_round_trip(false, true);
 }
 
+#[test]
+fn test_supplementary_lane_survives_using_borrowed_lanes_while_unplugged() {
+    let (mut harness, laptop, members) = measured_supplementary_layout();
+    let world = harness.world();
+    let parent = world
+        .query::<(&LayoutStrip, &ChildOf)>()
+        .iter(world)
+        .find(|(strip, _)| strip.contains(laptop))
+        .unwrap()
+        .1
+        .parent();
+    world.spawn((
+        LayoutStrip::new(TEST_WORKSPACE_ID, 0),
+        crate::ecs::Position(Origin::ZERO),
+        ChildOf(parent),
+    ));
+    harness.mock_state.remove_display(EXT_DISPLAY_ID);
+    for id in 100..106 {
+        harness
+            .mock_state
+            .update_window(id, |w| w.workspace_id = TEST_WORKSPACE_ID);
+    }
+    harness.world().write_message(Event::DisplayRemoved {
+        display_id: EXT_DISPLAY_ID,
+    });
+    harness.advance(Duration::from_secs(5));
+    let world = harness.world();
+    let borrowed = world
+        .query::<(Entity, &LayoutStrip)>()
+        .iter(world)
+        .find(|(_, strip)| strip.contains(members[3]))
+        .unwrap()
+        .0;
+    world
+        .entity_mut(borrowed)
+        .insert(crate::ecs::ActiveWorkspaceMarker);
+    world
+        .entity_mut(members[3])
+        .insert(crate::ecs::FocusedMarker);
+    harness.mock_state.set_focused_window(103);
+    harness.advance(Duration::from_secs(1));
+    harness.mock_state.add_display(
+        EXT_DISPLAY_ID,
+        IRect::new(-838, 1117, 2602, 2557),
+        vec![EXT_WORKSPACE_ID + 100],
+    );
+    for id in 100..106 {
+        harness
+            .mock_state
+            .update_window(id, |w| w.workspace_id = EXT_WORKSPACE_ID + 100);
+    }
+    harness.world().write_message(Event::DisplayAdded {
+        display_id: EXT_DISPLAY_ID,
+    });
+    harness.advance(Duration::from_secs(5));
+    let world = harness.world();
+    let (entity, strip) = world
+        .query::<(Entity, &LayoutStrip)>()
+        .iter(world)
+        .find(|(_, strip)| strip.contains(laptop))
+        .unwrap();
+    assert_eq!((strip.id(), strip.virtual_index), (TEST_WORKSPACE_ID, 2));
+    assert_eq!(strip.all_windows(), vec![laptop]);
+    assert!(
+        world
+            .get::<crate::ecs::SelectedVirtualMarker>(entity)
+            .is_some()
+    );
+}
+
 fn activate_laptop_before_inventory(harness: &mut TestHarness, laptop: Entity) {
     for id in [100, 103, 104] {
         harness
