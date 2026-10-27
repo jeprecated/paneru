@@ -46,6 +46,7 @@ pub(crate) struct DisplayReconcileState {
     retries_left: u8,
     verify_again: bool,
     reload: bool,
+    probe_only: bool,
 }
 
 /// Suppress transient AX geometry and Space ownership while monitors settle.
@@ -162,6 +163,7 @@ pub(crate) fn reconcile_displays(
     sleeping: Option<Res<super::sleep::Sleeping>>,
     waking: Option<Res<super::sleep::WakeRecovery>>,
     displays: Query<&Display>,
+    reconfiguring: Option<Res<DisplayReconfiguring>>,
 ) {
     if sleeping.is_some() {
         messages.clear();
@@ -177,6 +179,7 @@ pub(crate) fn reconcile_displays(
         state.retries_left = DISPLAY_RETRIES;
         state.verify_again = true;
         state.reload = false;
+        state.probe_only = false;
         return;
     }
     let mut check_topology = false;
@@ -224,6 +227,19 @@ pub(crate) fn reconcile_displays(
         state.pending = Some(Timer::new(DISPLAY_SETTLE_DELAY, TimerMode::Once));
         state.retries_left = DISPLAY_RETRIES;
         state.verify_again = true;
+        state.probe_only = false;
+        return;
+    }
+    if check_topology && (state.probe_only || state.pending.is_none() && reconfiguring.is_none()) {
+        // The inventory itself may still be stale at the first NSWorkspace
+        // notification. Protect ownership and AX geometry immediately, then
+        // check after a quiet period instead of trusting that first read.
+        commands.insert_resource(DisplayReconfiguring {
+            until: time.elapsed() + DISPLAY_SETTLE_DELAY,
+        });
+        state.pending = Some(Timer::new(DISPLAY_SETTLE_DELAY, TimerMode::Once));
+        state.retries_left = DISPLAY_RETRIES;
+        state.probe_only = true;
         return;
     }
 
@@ -237,10 +253,6 @@ pub(crate) fn reconcile_displays(
     state.pending = None;
 
     debug!("Reconciling displays against OS after wake / resize / configure");
-    commands.insert_resource(DisplayReconfiguring {
-        until: time.elapsed() + Duration::from_secs(2),
-    });
-
     let present_displays: HashMap<CGDirectDisplayID, _> = window_manager
         .0
         .present_displays()
@@ -252,6 +264,9 @@ pub(crate) fn reconcile_displays(
             .values()
             .any(|(_, spaces)| spaces.is_empty())
     {
+        commands.insert_resource(DisplayReconfiguring {
+            until: time.elapsed() + Duration::from_secs(2),
+        });
         if state.retries_left > 0 {
             state.retries_left -= 1;
             warn!("Display list is incomplete; retrying in {DISPLAY_RETRY_DELAY:?}");
@@ -261,6 +276,25 @@ pub(crate) fn reconcile_displays(
         warn!("Display list is still incomplete; retaining the existing layouts");
         return;
     }
+    if state.probe_only {
+        state.probe_only = false;
+        let changed = present_displays.len() != displays.iter().count()
+            || present_displays.values().any(|(current, _)| {
+                !displays.iter().any(|previous| {
+                    previous.id() == current.id() && previous.raw_bounds() == current.raw_bounds()
+                })
+            });
+        if !changed {
+            // Ordinary monitor/Space focus: release pending ownership checks
+            // without rescanning apps or replaying all window frames.
+            commands.remove_resource::<DisplayReconfiguring>();
+            return;
+        }
+        state.verify_again = true;
+    }
+    commands.insert_resource(DisplayReconfiguring {
+        until: time.elapsed() + Duration::from_secs(2),
+    });
 
     info!(
         displays = ?present_displays.iter().map(|(id, (display, spaces))| (*id, display.bounds(), spaces)).collect::<Vec<_>>(),

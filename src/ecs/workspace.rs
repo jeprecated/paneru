@@ -178,6 +178,10 @@ pub(crate) struct SnapStripMarker {
     pub strip: Entity,
 }
 
+/// Retain an activation until its display/Space notification has settled.
+#[derive(Component)]
+struct PendingSpaceOwnership;
+
 /// Long enough for the settle described above to actually finish (it can
 /// take more than one tick), short enough that an ordinary layout change
 /// shortly after a switch still animates normally.
@@ -309,7 +313,7 @@ fn workspace_change_handler(
 
 #[instrument(level = Level::DEBUG, skip_all, fields(trigger))]
 fn detect_moved_windows(
-    activated_workspace: Single<Entity, Added<ActiveWorkspaceMarker>>,
+    pending: Populated<Entity, (With<ActiveWorkspaceMarker>, With<PendingSpaceOwnership>)>,
     mut workspaces: Query<(&mut LayoutStrip, Entity, Has<NativeFullscreenMarker>)>,
     apps: Query<&mut Application>,
     window_manager: Res<WindowManager>,
@@ -317,8 +321,14 @@ fn detect_moved_windows(
     transferring: Query<(), With<super::window_geometry::RecentDisplayTransfer>>,
     mut ctx: WindowCtx,
 ) {
+    let Ok(activated_workspace) = pending.single() else {
+        return;
+    };
+    ctx.commands
+        .entity(activated_workspace)
+        .remove::<PendingSpaceOwnership>();
     let Ok(workspace_id) = workspaces
-        .get(*activated_workspace)
+        .get(activated_workspace)
         .map(|strip| strip.0.id())
     else {
         return;
@@ -398,7 +408,7 @@ fn detect_moved_windows(
             .find_map(|(strip, _, _)| strip.tab_group(entity))
             .unwrap_or_else(|| vec![entity]);
         for (mut strip, strip_entity, _) in &mut workspaces {
-            if strip_entity == *activated_workspace {
+            if strip_entity == activated_workspace {
                 strip.append_tab_group(&moving_entities);
             } else {
                 for moving_entity in &moving_entities {
@@ -636,14 +646,14 @@ fn cleanup_active_workspace_marker(
         {
             // Mark the currently selected VW with selected marker. This also removes the previously
             // selected markers from other VW's on the same workspace.
-            entity_commands.try_insert(SelectedVirtualMarker);
+            entity_commands.try_insert((SelectedVirtualMarker, PendingSpaceOwnership));
             // AX focus can activate a strip before the menu-bar display
             // notification arrives. Commands and sizing must already use its
             // owning display, rather than the screen we just left.
             commands.entity(child.parent()).insert(ActiveDisplayMarker);
         } else if marker && let Ok(mut entity_commands) = commands.get_entity(entity) {
             // Remove the active marker from any other workspace.
-            entity_commands.try_remove::<ActiveWorkspaceMarker>();
+            entity_commands.try_remove::<(ActiveWorkspaceMarker, PendingSpaceOwnership)>();
         }
     });
 }
