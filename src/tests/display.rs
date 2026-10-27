@@ -14,6 +14,13 @@ use crate::{assert_not_on_workspace, assert_on_workspace, assert_window_at, asse
 
 use super::*;
 
+fn window_exists(world: &mut World, id: WinID) -> bool {
+    world
+        .query::<&Window>()
+        .iter(world)
+        .any(|window| window.id() == id)
+}
+
 /// Seven-window layout captured from the physical hotplug reproduction.
 fn measured_supplementary_layout() -> (TestHarness, Entity, Vec<Entity>) {
     use crate::ecs::workspace::PreviousStripPosition;
@@ -97,12 +104,17 @@ fn measured_supplementary_layout() -> (TestHarness, Entity, Vec<Entity>) {
 
 #[test]
 fn test_supplementary_monitor_round_trip_preserves_each_window_lane_and_width() {
-    supplementary_monitor_round_trip(false);
+    supplementary_monitor_round_trip(false, false);
 }
 
 #[test]
 fn test_hotplug_space_notification_precedes_the_monitor_inventory_change() {
-    supplementary_monitor_round_trip(true);
+    supplementary_monitor_round_trip(true, false);
+}
+
+#[test]
+fn test_hotplug_space_destruction_and_transient_ax_failure_preserve_lanes() {
+    supplementary_monitor_round_trip(false, true);
 }
 
 fn activate_laptop_before_inventory(harness: &mut TestHarness, laptop: Entity) {
@@ -124,9 +136,11 @@ fn activate_laptop_before_inventory(harness: &mut TestHarness, laptop: Entity) {
         .insert(crate::ecs::ActiveWorkspaceMarker);
 }
 
-fn supplementary_monitor_round_trip(lagging_inventory: bool) {
+#[allow(clippy::too_many_lines)]
+fn supplementary_monitor_round_trip(lagging_inventory: bool, lifecycle_notifications: bool) {
     use crate::ecs::Bounds;
     let (mut harness, laptop, members) = measured_supplementary_layout();
+    let mut current_space = EXT_WORKSPACE_ID;
     for cycle in 0..2 {
         harness.world().write_message(Event::Command {
             command: Command::DisplayNext,
@@ -144,8 +158,29 @@ fn supplementary_monitor_round_trip(lagging_inventory: bool) {
         if lagging_inventory {
             activate_laptop_before_inventory(&mut harness, laptop);
         }
+        if lifecycle_notifications {
+            harness
+                .mock_state
+                .update_window(100, |w| w.ax_unavailable = true);
+            harness.world().write_message(Event::DisplayConfigured {
+                display_id: EXT_DISPLAY_ID,
+            });
+            harness.world().write_message(Event::SpaceDestroyed {
+                space_id: current_space,
+            });
+            harness.world().write_message(Event::WindowDestroyed {
+                window_id: 100,
+                source: crate::events::DestroySource::SpaceNotification,
+            });
+        }
         harness.world().write_message(Event::DisplayChanged);
         harness.advance(Duration::from_millis(100));
+        if lifecycle_notifications {
+            assert_eq!(find_window_entity(100, harness.world()), members[0]);
+            harness
+                .mock_state
+                .update_window(100, |w| w.ax_unavailable = false);
+        }
         if lagging_inventory {
             harness.mock_state.remove_display(EXT_DISPLAY_ID);
         }
@@ -179,6 +214,7 @@ fn supplementary_monitor_round_trip(lagging_inventory: bool) {
             assert_eq!((row.id(), row.virtual_index), (TEST_WORKSPACE_ID, lane));
         }
         let replacement = EXT_WORKSPACE_ID + 100 + cycle;
+        current_space = replacement;
         harness.mock_state.add_display(
             EXT_DISPLAY_ID,
             IRect::new(-838, 1117, 2602, 2557),
@@ -192,6 +228,11 @@ fn supplementary_monitor_round_trip(lagging_inventory: bool) {
         harness.world().write_message(Event::DisplayAdded {
             display_id: EXT_DISPLAY_ID,
         });
+        if lifecycle_notifications {
+            harness.world().write_message(Event::SpaceCreated {
+                space_id: replacement,
+            });
+        }
         harness.advance(Duration::from_secs(5));
         let world = harness.world();
         for (index, entity) in members.iter().enumerate() {
@@ -243,6 +284,62 @@ fn test_native_space_move_is_adopted_after_notification_settles() {
             .world()
             .contains_resource::<crate::ecs::reload::Reloading>()
     );
+}
+
+#[test]
+fn test_real_window_closes_are_processed_during_and_after_display_reconfiguration() {
+    let mut harness = TestHarness::new().with_windows(3);
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::DisplayConfigured {
+        display_id: TEST_DISPLAY_ID,
+    });
+    harness.advance(Duration::from_millis(50));
+    harness.mock_state.os_close_window(1);
+    harness.mock_state.os_vanish_window(2);
+    harness.world().write_message(Event::WindowDestroyed {
+        window_id: 2,
+        source: crate::events::DestroySource::SpaceNotification,
+    });
+    harness.advance(Duration::from_millis(60));
+    assert!(
+        !window_exists(harness.world(), 1),
+        "AX closes remain immediate"
+    );
+    assert!(
+        window_exists(harness.world(), 2),
+        "SLS closes wait for settled AX"
+    );
+    harness.advance(Duration::from_secs(5));
+    assert!(
+        !window_exists(harness.world(), 2),
+        "confirmed SLS closes are retained"
+    );
+    assert!(window_exists(harness.world(), 0));
+}
+
+#[test]
+fn test_new_native_space_is_created_after_an_ordinary_notification_probe() {
+    let mut harness = TestHarness::new().with_windows(1);
+    harness.advance(Duration::from_secs(1));
+    harness.mock_state.add_display(
+        TEST_DISPLAY_ID,
+        IRect::new(0, 0, TEST_DISPLAY_WIDTH, TEST_DISPLAY_HEIGHT),
+        vec![TEST_WORKSPACE_ID, EXT_WORKSPACE_ID],
+    );
+    harness.world().write_message(Event::DisplayChanged);
+    harness.world().write_message(Event::SpaceCreated {
+        space_id: EXT_WORKSPACE_ID,
+    });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    let parent = world
+        .query::<(&LayoutStrip, &ChildOf)>()
+        .iter(world)
+        .find(|(strip, _)| strip.id() == EXT_WORKSPACE_ID)
+        .expect("the deferred native Space creation must still be processed")
+        .1
+        .parent();
+    assert_eq!(world.get::<Display>(parent).unwrap().id(), TEST_DISPLAY_ID);
 }
 
 #[test]

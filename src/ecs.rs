@@ -165,6 +165,7 @@ pub fn register_systems(app: &mut bevy::app::App) {
             systems::timeout_ticker,
             workspace::cleanup_unordered_windows
                 .run_if(not(resource_exists::<Initializing>))
+                .run_if(not(resource_exists::<display::DisplayReconfiguring>))
                 .run_if(on_timer(CLOSED_WINDOW_CHECK_FREQ)),
             systems::regroup_stray_native_tabs
                 .run_if(native_tabs_enabled)

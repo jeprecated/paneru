@@ -45,6 +45,7 @@ pub(crate) struct MockWindowData {
     pub(crate) horizontal_padding: i32,
     pub(crate) vertical_padding: i32,
     pub(crate) child_role: bool,
+    pub(crate) ax_unavailable: bool,
 }
 
 impl Default for MockWindowData {
@@ -65,6 +66,7 @@ impl Default for MockWindowData {
             horizontal_padding: 0,
             vertical_padding: 0,
             child_role: false,
+            ax_unavailable: false,
         }
     }
 }
@@ -552,8 +554,13 @@ impl MockState {
         });
 
         let s = self.clone();
-        mw.expect_is_alive()
-            .returning(move || s.inner.force_read().windows.contains_key(&id));
+        mw.expect_is_alive().returning(move || {
+            s.inner
+                .force_read()
+                .windows
+                .get(&id)
+                .is_some_and(|window| !window.ax_unavailable)
+        });
 
         let s = self.clone();
         // An empty subrole models a window without an `AXSubrole` attribute,

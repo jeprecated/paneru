@@ -425,13 +425,12 @@ fn workspace_destroyed_handler(
     mut workspaces: Populated<(&mut LayoutStrip, Entity, Option<&NativeFullscreenMarker>)>,
     mut focus_history: ResMut<FocusHistory>,
     mut commands: Commands,
+    reconfiguring: Option<Res<super::display::DisplayReconfiguring>>,
 ) {
     for event in messages.read() {
         let Event::SpaceDestroyed { space_id } = event else {
             continue;
         };
-        focus_history.forget_workspace(*space_id);
-
         let Some((entity, fullscreen)) =
             workspaces.iter().find_map(|(strip, entity, fullscreen)| {
                 let window = strip.first().ok().and_then(|col| col.top());
@@ -440,6 +439,16 @@ fn workspace_destroyed_handler(
         else {
             continue;
         };
+
+        if reconfiguring.is_some() && fullscreen.is_none() {
+            debug!(
+                space_id,
+                "Deferring Space destruction until display ownership settles"
+            );
+            commands.spawn(super::display::DeferredSpaceEvent(event.clone()));
+            continue;
+        }
+        focus_history.forget_workspace(*space_id);
 
         if let Some((
             window,
@@ -482,6 +491,7 @@ fn workspace_created_handler(
     active_display: Single<(&Display, Entity), With<ActiveDisplayMarker>>,
     workspaces: Query<&LayoutStrip>,
     mut commands: Commands,
+    reconfiguring: Option<Res<super::display::DisplayReconfiguring>>,
 ) {
     for event in messages.read() {
         let Event::SpaceCreated { space_id } = event else {
@@ -490,6 +500,14 @@ fn workspace_created_handler(
 
         if workspaces.into_iter().any(|strip| strip.id() == *space_id) {
             warn!("Workspace {space_id} already exists!");
+            continue;
+        }
+        if reconfiguring.is_some() {
+            debug!(
+                space_id,
+                "Deferring Space creation until display ownership settles"
+            );
+            commands.spawn(super::display::DeferredSpaceEvent(event.clone()));
             continue;
         }
         debug!("Workspace create {space_id}");

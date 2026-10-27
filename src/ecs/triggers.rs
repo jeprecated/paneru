@@ -913,6 +913,7 @@ pub(super) fn window_managed_trigger(
 /// * `windows` - A query for all windows with their parent.
 /// * `commands` - Bevy commands to despawn entities and trigger events.
 #[instrument(level = Level::DEBUG, skip_all)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn window_destroyed_trigger(
     mut messages: MessageReader<Event>,
     active_display: ActiveDisplay,
@@ -921,6 +922,7 @@ pub(super) fn window_destroyed_trigger(
     mut focus_history: ResMut<FocusHistory>,
     windows: Windows,
     mut commands: Commands,
+    reconfiguring: Option<Res<super::display::DisplayReconfiguring>>,
 ) {
     for event in messages.read() {
         let Event::WindowDestroyed { window_id, source } = event else {
@@ -931,6 +933,15 @@ pub(super) fn window_destroyed_trigger(
             debug!("Duplicate event: window {window_id} already destroyed.");
             continue;
         };
+
+        if matches!(source, DestroySource::SpaceNotification) && reconfiguring.is_some() {
+            debug!(
+                window_id,
+                "Deferring SLS removal until display ownership settles"
+            );
+            commands.spawn(super::display::DeferredSpaceEvent(event.clone()));
+            continue;
+        }
 
         // Only the SLS notification is ambiguous — it also fires when a window merely leaves a
         // space, so it needs confirming. A `kAXUIElementDestroyedNotification` means the AX element

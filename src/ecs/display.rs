@@ -4,11 +4,11 @@ use bevy::ecs::component::Component;
 use bevy::ecs::entity::Entity;
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::ecs::lifecycle::Add;
-use bevy::ecs::message::MessageReader;
+use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy::ecs::observer::On;
 use bevy::ecs::query::{Has, With};
 use bevy::ecs::schedule::IntoScheduleConfigs;
-use bevy::ecs::system::{Commands, Local, NonSend, Query, Res, RunSystemOnce};
+use bevy::ecs::system::{Commands, Local, NonSend, Populated, Query, Res, RunSystemOnce};
 use bevy::ecs::world::World;
 use bevy::math::IRect;
 use bevy::platform::collections::HashSet;
@@ -55,6 +55,23 @@ pub(crate) struct DisplayReconfiguring {
     until: Duration,
 }
 
+/// Space lifecycle notifications must be confirmed against settled ownership.
+/// During hotplug they also describe surviving lanes and temporarily stale AX
+/// elements, so processing them immediately discards their identities.
+#[derive(Component)]
+pub(crate) struct DeferredSpaceEvent(pub Event);
+
+fn replay_space_events(
+    pending: Populated<(Entity, &DeferredSpaceEvent)>,
+    mut messages: MessageWriter<Event>,
+    mut commands: Commands,
+) {
+    for (entity, event) in &pending {
+        messages.write(event.0.clone());
+        commands.entity(entity).despawn();
+    }
+}
+
 /// Original lane identity while its physical monitor is disconnected.
 #[derive(Component, Clone, Copy)]
 pub(crate) struct DisplacedWorkspace {
@@ -91,6 +108,14 @@ impl Plugin for DisplayEventsPlugin {
             finish_reconfiguration.run_if(
                 bevy::ecs::schedule::common_conditions::resource_exists::<DisplayReconfiguring>,
             ),
+        )
+        .add_systems(
+            PostUpdate,
+            replay_space_events
+                .run_if(bevy::ecs::schedule::common_conditions::not(
+                    bevy::ecs::schedule::common_conditions::resource_exists::<DisplayReconfiguring>,
+                ))
+                .in_set(super::sleep::LayoutActivity),
         )
         .add_observer(read_display_properties_trigger)
         .add_observer(cleanup_active_display_marker);
