@@ -152,7 +152,7 @@ fn display_change_handler(
 /// macOS may report an empty or incomplete display list during reconfiguration;
 /// applying that transient list would orphan every workspace. A successful
 /// scan refreshes both display ownership and the positions of its strips.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(crate) fn reconcile_displays(
     mut messages: MessageReader<Event>,
     window_manager: Res<WindowManager>,
@@ -161,6 +161,7 @@ pub(crate) fn reconcile_displays(
     mut commands: Commands,
     sleeping: Option<Res<super::sleep::Sleeping>>,
     waking: Option<Res<super::sleep::WakeRecovery>>,
+    displays: Query<&Display>,
 ) {
     if sleeping.is_some() {
         messages.clear();
@@ -178,7 +179,9 @@ pub(crate) fn reconcile_displays(
         state.reload = false;
         return;
     }
+    let mut check_topology = false;
     let needs_reconcile = messages.read().fold(false, |changed, event| {
+        check_topology |= matches!(event, Event::DisplayChanged | Event::SpaceChanged);
         let reload = matches!(
             event,
             Event::Command {
@@ -198,6 +201,22 @@ pub(crate) fn reconcile_displays(
                     | Event::DisplayConfigured { .. }
             )
     });
+    // NSWorkspace announces the active display/Space before the CG hotplug
+    // callback. Adopting its partial window ownership in that interval moved
+    // individual apps into the laptop's active lane and reinterpreted their
+    // external pixel widths as laptop fractions. Guard the very first signal,
+    // while leaving ordinary focus and native Space switches alone.
+    let needs_reconcile = needs_reconcile
+        || check_topology && {
+            let present = window_manager.0.present_displays();
+            present.len() != displays.iter().count()
+                || present.iter().any(|(current, _)| {
+                    !displays.iter().any(|previous| {
+                        previous.id() == current.id()
+                            && previous.raw_bounds() == current.raw_bounds()
+                    })
+                })
+        };
     if needs_reconcile {
         commands.insert_resource(DisplayReconfiguring {
             until: time.elapsed() + Duration::from_secs(2),

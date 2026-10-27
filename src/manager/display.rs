@@ -132,6 +132,11 @@ impl Display {
         bounds
     }
 
+    /// Core Graphics geometry before menu bar, notch, and config insets.
+    pub fn raw_bounds(&self) -> IRect {
+        self.bounds
+    }
+
     pub fn width(&self) -> i32 {
         self.bounds().width()
     }

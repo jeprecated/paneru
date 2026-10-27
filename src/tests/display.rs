@@ -14,6 +14,212 @@ use crate::{assert_not_on_workspace, assert_on_workspace, assert_window_at, asse
 
 use super::*;
 
+/// Seven-window layout captured from the physical hotplug reproduction.
+fn measured_supplementary_layout() -> (TestHarness, Entity, Vec<Entity>) {
+    use crate::ecs::workspace::PreviousStripPosition;
+    use crate::ecs::{Bounds, FocusedMarker, Position, WidthRatio};
+    let config: Config = (
+        MainOptions {
+            supplementary_display: Some(TEST_DISPLAY_ID),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_display(
+            TEST_DISPLAY_ID,
+            IRect::new(0, 0, 1728, 1117),
+            vec![TEST_WORKSPACE_ID],
+        )
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-838, 1117, 2602, 2557),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_windows(1);
+    for id in 100..106 {
+        harness = harness.with_workspace_window(id, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-838, 1152, 1455, 2552);
+        });
+    }
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    let laptop = find_window_entity(0, world);
+    let members = (100..106)
+        .map(|id| find_window_entity(id, world))
+        .collect::<Vec<_>>();
+    let (external, parent) = world
+        .query::<(Entity, &LayoutStrip, &ChildOf)>()
+        .iter(world)
+        .find(|(_, strip, _)| strip.id() == EXT_WORKSPACE_ID)
+        .map(|(e, _, p)| (e, p.parent()))
+        .unwrap();
+    world
+        .query::<&mut LayoutStrip>()
+        .iter_mut(world)
+        .find(|s| s.contains(laptop))
+        .unwrap()
+        .virtual_index = 2;
+    for (index, windows) in [(1, &members[3..5]), (2, &members[5..6])] {
+        for window in windows {
+            world
+                .get_mut::<LayoutStrip>(external)
+                .unwrap()
+                .remove(*window);
+        }
+        let mut strip = LayoutStrip::new(EXT_WORKSPACE_ID, index);
+        for window in windows {
+            strip.append(*window);
+        }
+        world.spawn((
+            strip,
+            Position(Origin::new(2592, 2547)),
+            ChildOf(parent),
+            PreviousStripPosition {
+                origin: Origin::new(-838, 1137),
+                focus: None,
+            },
+        ));
+    }
+    for (index, entity) in members.iter().enumerate() {
+        let width = if index == 5 { 2307 } else { 2293 };
+        world.entity_mut(*entity).insert((
+            Bounds(Size::new(width, 1400)),
+            WidthRatio(f64::from(width) / 3440.0),
+        ));
+    }
+    world.entity_mut(laptop).insert(FocusedMarker);
+    harness.advance(Duration::from_secs(1));
+    (harness, laptop, members)
+}
+
+#[test]
+fn test_supplementary_monitor_round_trip_preserves_each_window_lane_and_width() {
+    use crate::ecs::Bounds;
+    let (mut harness, laptop, members) = measured_supplementary_layout();
+    for cycle in 0..2 {
+        harness.world().write_message(Event::Command {
+            command: Command::DisplayNext,
+        });
+        harness.advance(Duration::from_secs(1));
+        harness.mock_state.remove_display(EXT_DISPLAY_ID);
+        // NSWorkspace switches to the laptop and reports Teams there before
+        // Core Graphics sends the monitor-removal notification. Other apps
+        // still belong to the vanished external Space during this interval.
+        harness
+            .mock_state
+            .update_window(105, |w| w.workspace_id = TEST_WORKSPACE_ID);
+        harness.world().write_message(Event::DisplayChanged);
+        harness.advance(Duration::from_millis(100));
+        for id in 100..106 {
+            harness
+                .mock_state
+                .update_window(id, |w| w.workspace_id = TEST_WORKSPACE_ID);
+        }
+        harness.world().write_message(Event::DisplayRemoved {
+            display_id: EXT_DISPLAY_ID,
+        });
+        harness.world().write_message(Event::SpaceChanged);
+        harness.advance(Duration::from_secs(5));
+        let world = harness.world();
+        for (index, entity) in members.iter().enumerate() {
+            let width = if index == 5 { 2307 } else { 2293 };
+            assert_eq!(
+                world.get::<Bounds>(*entity).unwrap().0.x,
+                crate::util::round_px(f64::from(width) * 1728.0 / 3440.0)
+            );
+            let row = world
+                .query::<&LayoutStrip>()
+                .iter(world)
+                .find(|strip| strip.contains(*entity))
+                .unwrap();
+            let lane = match index {
+                0..=2 => 3,
+                3..=4 => 4,
+                _ => 5,
+            };
+            assert_eq!((row.id(), row.virtual_index), (TEST_WORKSPACE_ID, lane));
+        }
+        let replacement = EXT_WORKSPACE_ID + 100 + cycle;
+        harness.mock_state.add_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-838, 1117, 2602, 2557),
+            vec![replacement],
+        );
+        for id in 100..106 {
+            harness
+                .mock_state
+                .update_window(id, |w| w.workspace_id = replacement);
+        }
+        harness.world().write_message(Event::DisplayAdded {
+            display_id: EXT_DISPLAY_ID,
+        });
+        harness.advance(Duration::from_secs(5));
+        let world = harness.world();
+        for (index, entity) in members.iter().enumerate() {
+            let row = world
+                .query::<&LayoutStrip>()
+                .iter(world)
+                .find(|s| s.contains(*entity))
+                .unwrap();
+            let lane = match index {
+                0..=2 => 0,
+                3..=4 => 1,
+                _ => 2,
+            };
+            assert_eq!((row.id(), row.virtual_index), (replacement, lane));
+            assert_eq!(
+                world.get::<Bounds>(*entity).unwrap().0.x,
+                if index == 5 { 2307 } else { 2293 }
+            );
+        }
+        let row = world
+            .query::<&LayoutStrip>()
+            .iter(world)
+            .find(|s| s.contains(laptop))
+            .unwrap();
+        assert_eq!(row.all_windows(), vec![laptop]);
+    }
+}
+
+#[test]
+fn test_ordinary_display_focus_with_menu_override_does_not_reconfigure_layouts() {
+    let config: Config = (
+        MainOptions {
+            menubar_height: Some(40),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_windows(1)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-800, 0, 0, 600),
+            vec![EXT_WORKSPACE_ID],
+        );
+    harness.advance(Duration::from_secs(1));
+    // The harness has no AppKit property observer; apply its config inset
+    // explicitly while keeping the mock's raw Core Graphics geometry intact.
+    let world = harness.world();
+    for mut display in world.query::<&mut Display>().iter_mut(world) {
+        display.set_menubar_height_override(Some(40));
+    }
+    harness.advance(Duration::from_millis(100));
+    harness.world().write_message(Event::DisplayChanged);
+    harness.world().write_message(Event::SpaceChanged);
+    harness.advance(Duration::from_millis(100));
+    assert!(
+        !harness
+            .world()
+            .contains_resource::<crate::ecs::display::DisplayReconfiguring>()
+    );
+}
+
 #[test]
 fn test_monitor_round_trip_preserves_lanes_after_native_spaces_disappear() {
     let mut harness = TestHarness::new()
