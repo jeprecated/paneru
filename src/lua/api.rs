@@ -957,7 +957,13 @@ mod tests {
             );
         }
         assert!(gesture_table.get::<bool>("paging").unwrap());
-        assert_eq!(gesture_table.get::<f64>("page_distance_cm").unwrap(), 3.0);
+        assert_eq!(
+            gesture_table
+                .get::<f64>("page_distance_cm")
+                .unwrap()
+                .to_bits(),
+            3.0_f64.to_bits()
+        );
         assert!(!gesture_table.get::<bool>("haptics").unwrap());
 
         let scroll_table: Table = swipe_table.get("scroll").unwrap();
@@ -981,7 +987,10 @@ mod tests {
         let swipe: Table = defaults.get("swipe").unwrap();
         let gesture: Table = swipe.get("gesture").unwrap();
         assert!(!gesture.get::<bool>("paging").unwrap());
-        assert_eq!(gesture.get::<f64>("page_distance_cm").unwrap(), 2.0);
+        assert_eq!(
+            gesture.get::<f64>("page_distance_cm").unwrap().to_bits(),
+            2.0_f64.to_bits()
+        );
         assert!(gesture.get::<bool>("haptics").unwrap());
     }
 }

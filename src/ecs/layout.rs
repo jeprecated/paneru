@@ -14,8 +14,8 @@ use tracing::{Level, instrument, trace};
 
 use crate::config::Config;
 use crate::ecs::params::Windows;
-use crate::ecs::workspace::{PreviousStripPosition, SnapStripMarker};
 use crate::ecs::window_geometry::DisplayConstrainedMarker;
+use crate::ecs::workspace::{PreviousStripPosition, SnapStripMarker};
 use crate::ecs::{
     ActiveWorkspaceMarker, Bounds, DockPosition, EnsureVisibleMarker, Initializing, LayoutPosition,
     ManualStripOffset, Position, RepositionMarker, ReshuffleAroundMarker, ResizeAnchor,
@@ -1809,7 +1809,6 @@ pub(crate) fn position_layout_windows(
     workspaces: StripsForWindowPositioning,
     snap_guards: Query<&SnapStripMarker>,
     constrained_windows: Query<(), With<DisplayConstrainedMarker>>,
-    animating_strips: Query<(), (With<LayoutStrip>, With<RepositionMarker>)>,
     displays: DisplayViewports,
     config: Res<Config>,
     mut commands: Commands,
@@ -1909,11 +1908,6 @@ pub(crate) fn position_layout_windows(
             .collect::<Vec<_>>();
         // Physical overflow stays inside its owning display while logical
         // columns keep scrolling. Hidden virtual rows use exposed-edge slots.
-        let owner = workspaces
-            .iter()
-            .find(|(_, strip, _, _, _)| strip.contains(entity));
-        let strip_animating =
-            owner.is_some_and(|(entity, _, _, _, _)| animating_strips.contains(entity));
         let safe_origin = constrained_origin(frame, viewport, &neighbors);
         if let Some(origin) = safe_origin {
             frame = IRect::from_corners(origin, origin + frame.size());
@@ -1934,7 +1928,7 @@ pub(crate) fn position_layout_windows(
             // Otherwise (programmatic strip animation, or pure layout change), animate toward the
             // new position so layout changes (swap/add/remove) slide instead of teleport. When the
             // strip is also being animated, the per-window target is recomputed each tick from the
-            // strip's current position, so the two motions compose: e.g., on swap, the focused
+            // strip's target position, so both start moving on the same frame: e.g., on swap, the focused
             // window's target converges back to its old visual position as the strip settles, while
             // the other window slides past.
             // Parking and un-parking have to snap as one move. The clamp above
@@ -1952,9 +1946,6 @@ pub(crate) fn position_layout_windows(
             // restore-driven, since its last position can land close enough
             // to its target. See `SnapStripMarker`.
             if context.swiping
-                // The strip already supplies the animation. A second lerp on
-                // every window chased its moving target and made scrolling lag.
-                || strip_animating
                 || context.snap_settling
                 || offscreen_move && !config.virtual_workspace_animations()
             {

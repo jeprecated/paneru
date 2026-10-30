@@ -22,7 +22,11 @@ fn config(direction: &str, vertical: bool) -> Config {
 }
 
 fn swipe(delta: f64) -> Event {
-    Event::Swipe { delta, fingers: 3 }
+    Event::Swipe {
+        delta,
+        distance_cm: 0.0,
+        fingers: 3,
+    }
 }
 
 fn vertical_swipe(delta: f64) -> Event {
@@ -74,16 +78,16 @@ fn gesture_steps_focus_once_without_scrolling_and_rearm_on_lift() {
                 command: Command::Window(Operation::Focus(Direction::First)),
             },
             Event::TouchpadDown,
-            swipe(0.2),           // Subthreshold: no movement or focus change.
-            swipe(0.3),           // Cumulative threshold: focus the adjacent column.
-            swipe(2.0),           // Same gesture: never skip more columns.
-            vertical_swipe(-2.0), // Same gesture: no second action on the other axis.
+            swipe(0.2 / 3.0),           // Subthreshold: no movement or focus change.
+            swipe(0.3 / 3.0),           // Cumulative threshold: focus the adjacent column.
+            swipe(2.0 / 3.0),           // Same gesture: never skip more columns.
+            vertical_swipe(-2.0 / 3.0), // Same gesture: no second action on the other axis.
             Event::TouchpadUp,
             Event::TouchpadDown,
-            swipe(0.5),
+            swipe(0.5 / 3.0),
             Event::TouchpadUp,
             Event::TouchpadDown,
-            swipe(-0.5),
+            swipe(-0.5 / 3.0),
         ]);
 }
 
@@ -106,16 +110,17 @@ fn gesture_steps_reverse_direction_ignore_wrong_fingers_and_stop_at_edge() {
             },
             Event::TouchpadDown,
             Event::Swipe {
+                distance_cm: 0.0,
                 delta: -1.0,
                 fingers: 4,
             },
-            swipe(0.5), // Reversed goes west: already at the edge.
+            swipe(0.5 / 3.0), // Reversed goes west: already at the edge.
             Event::TouchpadUp,
             Event::TouchpadDown,
-            swipe(-0.5),
+            swipe(-0.5 / 3.0),
             Event::TouchpadUp,
             Event::TouchpadDown,
-            swipe(-0.5), // Already at the east edge; never wrap.
+            swipe(-0.5 / 3.0), // Already at the east edge; never wrap.
         ]);
 }
 
@@ -133,12 +138,12 @@ fn gesture_steps_vertical_switches_once_and_rearms_without_timeout() {
         .run(vec![
             Event::MenuOpened { window_id: 0 },
             Event::TouchpadDown,
-            vertical_swipe(-0.5),
-            vertical_swipe(-1.0),
-            swipe(1.0),
+            vertical_swipe(-0.5 / 3.0),
+            vertical_swipe(-1.0 / 3.0),
+            swipe(1.0 / 3.0),
             Event::TouchpadUp,
             Event::TouchpadDown,
-            vertical_swipe(0.5),
+            vertical_swipe(0.5 / 3.0),
         ]);
 }
 
@@ -154,12 +159,11 @@ fn gesture_steps_respects_disabled_vertical_gestures() {
         .run(vec![
             Event::MenuOpened { window_id: 0 },
             Event::TouchpadDown,
-            vertical_swipe(-1.0),
+            vertical_swipe(-1.0 / 3.0),
         ]);
 }
 
 #[test]
-#[allow(clippy::cast_precision_loss)] // Counts below are exactly 3 and 4.
 fn gesture_steps_small_threshold_uses_average_finger_travel_on_both_axes() {
     for fingers in [3, 4] {
         let config: Config = format!(
@@ -188,25 +192,28 @@ fn gesture_steps_small_threshold_uses_average_finger_travel_on_both_axes() {
                 },
                 Event::TouchpadDown,
                 Event::Swipe {
-                    delta: 0.01 * fingers as f64,
+                    distance_cm: 0.0,
+                    delta: 0.01,
                     fingers,
                 },
                 Event::Swipe {
-                    delta: 0.011 * fingers as f64,
+                    distance_cm: 0.0,
+                    delta: 0.011,
                     fingers,
                 },
                 Event::Swipe {
-                    delta: 0.5 * fingers as f64,
+                    distance_cm: 0.0,
+                    delta: 0.5,
                     fingers,
                 },
                 Event::TouchpadUp,
                 Event::TouchpadDown,
                 Event::VerticalSwipe {
-                    delta: -0.01 * fingers as f64,
+                    delta: -0.01,
                     fingers,
                 },
                 Event::VerticalSwipe {
-                    delta: -0.011 * fingers as f64,
+                    delta: -0.011,
                     fingers,
                 },
             ]);
@@ -235,4 +242,37 @@ fn gesture_step_threshold_clamps_invalid_values_and_is_independent_of_sensitivit
             .unwrap();
         assert!((config.swipe_gesture_step_threshold() - 0.15 / 0.35 / 3.0).abs() < f64::EPSILON);
     }
+}
+
+#[test]
+fn gesture_steps_take_precedence_over_paging() {
+    let config: Config = "[swipe.gesture]\nfingers_count = 3\nwindow_step = true\nstep_threshold = 0.02\npaging = true\npage_distance_cm = 0.01\n".try_into().unwrap();
+    TestHarness::new()
+        .with_config(config)
+        .with_windows(3)
+        .on_iteration(3, |world, _| {
+            assert_focused!(world, 1);
+            assert_no_scrolling(world);
+        })
+        .on_iteration(4, |world, _| {
+            assert_focused!(world, 1);
+            assert_no_scrolling(world);
+        })
+        .run(vec![
+            Event::MenuOpened { window_id: 0 },
+            Event::Command {
+                command: Command::Window(Operation::Focus(Direction::First)),
+            },
+            Event::TouchpadDown,
+            Event::Swipe {
+                delta: 0.03,
+                distance_cm: 5.0,
+                fingers: 3,
+            },
+            Event::Swipe {
+                delta: 0.5,
+                distance_cm: 5.0,
+                fingers: 3,
+            },
+        ]);
 }

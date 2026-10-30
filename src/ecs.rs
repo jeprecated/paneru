@@ -209,7 +209,8 @@ pub fn register_systems(app: &mut bevy::app::App) {
             UpdateSet::Layout,
             UpdateSet::Housekeeping,
         )
-            .chain().in_set(sleep::LayoutActivity),
+            .chain()
+            .in_set(sleep::LayoutActivity),
     );
     app.configure_sets(
         PostUpdate,
@@ -218,7 +219,8 @@ pub fn register_systems(app: &mut bevy::app::App) {
             PostUpdateSet::Ui,
             PostUpdateSet::Bookkeeping,
         )
-            .chain().in_set(sleep::LayoutActivity),
+            .chain()
+            .in_set(sleep::LayoutActivity),
     );
 
     app.add_systems(
@@ -241,7 +243,9 @@ pub fn register_systems(app: &mut bevy::app::App) {
             // Read creation notifications in the same frame that pumps them.
             // Otherwise an idle pump can wait up to its next timeout before
             // the first resize of a newly visible window.
-            systems::window_creation_event.in_set(PreUpdateSet::Dispatch).in_set(sleep::LayoutActivity),
+            systems::window_creation_event
+                .in_set(PreUpdateSet::Dispatch)
+                .in_set(sleep::LayoutActivity),
         ),
     );
     app.add_systems(

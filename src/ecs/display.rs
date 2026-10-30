@@ -65,7 +65,10 @@ impl Plugin for DisplayEventsPlugin {
         app.init_resource::<DisplayReconcileState>()
             .add_systems(
                 PreUpdate,
-                (display_change_handler.in_set(super::sleep::LayoutActivity), reconcile_displays)
+                (
+                    display_change_handler.in_set(super::sleep::LayoutActivity),
+                    reconcile_displays,
+                )
                     .chain()
                     .in_set(super::PreUpdateSet::Dispatch),
             )
@@ -232,6 +235,7 @@ pub(crate) fn reconcile_displays(
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn apply_display_snapshot(
     bevy::prelude::In(snapshot): bevy::prelude::In<Vec<(Display, Vec<WorkspaceId>)>>,
+    waking: Option<Res<super::sleep::WakeRecovery>>,
     workspaces: Query<(&LayoutStrip, Entity, Option<&ChildOf>)>,
     mut displays: Query<(&mut Display, Entity)>,
     mut commands: Commands,
@@ -293,8 +297,12 @@ pub(crate) fn apply_display_snapshot(
         );
     }
 
+    // During wake the saved strips win over transient WindowServer ownership.
+    let preserve_ownership = waking.is_some();
     commands.queue(move |world: &mut World| {
-        migrate_moved_windows_across_displays(world);
+        if !preserve_ownership {
+            migrate_moved_windows_across_displays(world);
+        }
         refresh_display_layout(world, &previous_parents);
     });
 }

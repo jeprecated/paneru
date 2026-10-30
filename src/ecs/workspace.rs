@@ -128,7 +128,8 @@ impl Plugin for WorkspaceEventsPlugin {
             PreUpdate,
             (switch_virtual_workspace_bind, move_virtual_workspace_bind)
                 .run_if(super::supplementary::scrolling_display)
-                .in_set(super::PreUpdateSet::Dispatch).in_set(super::sleep::LayoutActivity),
+                .in_set(super::PreUpdateSet::Dispatch)
+                .in_set(super::sleep::LayoutActivity),
         );
         app.add_systems(
             PreUpdate,
@@ -357,6 +358,11 @@ fn workspace_change_handler(
 }
 
 #[instrument(level = Level::DEBUG, skip_all, fields(trigger))]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "Window discovery and ownership reconciliation share the same ECS event context"
+)]
 fn detect_moved_windows(
     activated_workspace: Single<Entity, Added<ActiveWorkspaceMarker>>,
     mut workspaces: Query<(
@@ -442,9 +448,10 @@ fn detect_moved_windows(
         .iter()
         .copied()
         .filter(|&entity| {
-            !workspaces
-                .iter()
-                .any(|(strip, _, fullscreen, _)| fullscreen && strip.contains(entity))
+            !transferring.contains(entity)
+                && !workspaces
+                    .iter()
+                    .any(|(strip, _, fullscreen, _)| fullscreen && strip.contains(entity))
         })
         .collect();
     if moved_set.is_empty() {
@@ -739,25 +746,30 @@ pub(crate) fn cleanup_unordered_windows(
 #[instrument(level = Level::DEBUG, skip_all, fields(trigger))]
 fn cleanup_active_workspace_marker(
     trigger: On<Add, ActiveWorkspaceMarker>,
-    workspaces: Query<(Entity, Has<ActiveWorkspaceMarker>, &ChildOf), With<LayoutStrip>>,
+    workspaces: Query<(Entity, Has<ActiveWorkspaceMarker>, &ChildOf, &LayoutStrip)>,
     mut commands: Commands,
 ) {
-    workspaces.iter().for_each(|(entity, marker, child)| {
-        if entity == trigger.entity
-            && let Ok(mut entity_commands) = commands.get_entity(entity)
-        {
-            // Mark the currently selected VW with selected marker. This also removes the previously
-            // selected markers from other VW's on the same workspace.
-            entity_commands.try_insert(SelectedVirtualMarker);
-            // AX focus can activate a strip before the menu-bar display
-            // notification arrives. Commands and sizing must already use its
-            // owning display, rather than the screen we just left.
-            commands.entity(child.parent()).insert(ActiveDisplayMarker);
-        } else if marker && let Ok(mut entity_commands) = commands.get_entity(entity) {
-            // Remove the active marker from any other workspace.
-            entity_commands.try_remove::<ActiveWorkspaceMarker>();
-        }
-    });
+    workspaces
+        .iter()
+        .for_each(|(entity, marker, child, strip)| {
+            if entity == trigger.entity
+                && let Ok(mut entity_commands) = commands.get_entity(entity)
+            {
+                // Mark the currently selected VW with selected marker. This also removes the previously
+                // selected markers from other VW's on the same workspace.
+                entity_commands.try_insert(SelectedVirtualMarker);
+                // AX focus can activate a strip before the menu-bar display
+                // notification arrives. Commands and sizing must already use its
+                // owning display, rather than the screen we just left.
+                // An empty row does not establish OS focus on another display.
+                if strip.len() > 0 {
+                    commands.entity(child.parent()).insert(ActiveDisplayMarker);
+                }
+            } else if marker && let Ok(mut entity_commands) = commands.get_entity(entity) {
+                // Remove the active marker from any other workspace.
+                entity_commands.try_remove::<ActiveWorkspaceMarker>();
+            }
+        });
 }
 
 fn flash_workspace_on_activation(

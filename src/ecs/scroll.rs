@@ -115,7 +115,9 @@ impl PageGestureState {
 }
 
 fn paging_enabled(config: Res<Config>, state: Res<PageGestureState>) -> bool {
-    (config.swipe_gesture_paging() && !config.swipe_gesture_window_step()) || state.has_work() || state.config.as_ref().is_some_and(|c| c.0)
+    (config.swipe_gesture_paging() && !config.swipe_gesture_window_step())
+        || state.has_work()
+        || state.config.as_ref().is_some_and(|c| c.0)
 }
 
 fn paging_active(config: Res<Config>, state: Res<PageGestureState>) -> bool {
@@ -231,7 +233,8 @@ impl Plugin for ScrollEventsPlugin {
                 )
                     .chain()
                     .run_if(super::supplementary::scrolling_display),
-            ).in_set(UpdateSet::Input),
+            )
+                .in_set(UpdateSet::Input),
         );
     }
 }
@@ -339,7 +342,9 @@ fn swipe_gesture(
 
     for InputEvent(event) in messages.read() {
         match event {
-            Event::TouchpadDown if !config.swipe_gesture_window_step() && !config.swipe_gesture_paging() => {
+            Event::TouchpadDown
+                if !config.swipe_gesture_window_step() && !config.swipe_gesture_paging() =>
+            {
                 touchpad_down = true;
                 total_delta = 0.0;
             }
@@ -348,9 +353,10 @@ fn swipe_gesture(
                 has_scroll_event = true;
             }
             Event::Swipe { delta, fingers, .. }
-                if !config.swipe_gesture_window_step() && config
-                    .swipe_gesture_fingers()
-                    .is_some_and(|fingers_configured| fingers_configured == *fingers)
+                if !config.swipe_gesture_window_step()
+                    && config
+                        .swipe_gesture_fingers()
+                        .is_some_and(|fingers_configured| fingers_configured == *fingers)
                     && !config.swipe_gesture_paging() =>
             {
                 total_delta += delta;
@@ -649,8 +655,6 @@ struct GestureStepState {
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
-// Physical finger counts are far below f64's exact integer limit.
-#[allow(clippy::cast_precision_loss)]
 fn step_swipe_gesture(
     mut messages: MessageReader<InputEvent>,
     active_display: ActiveDisplay,
@@ -675,7 +679,7 @@ fn step_swipe_gesture(
                     && *fingers >= 3
                     && config.swipe_gesture_fingers() == Some(*fingers) =>
             {
-                state.horizontal += delta / *fingers as f64;
+                state.horizontal += delta;
                 if state.horizontal.abs() >= threshold {
                     // Positive deltas mean fingers move left. Natural scrolling
                     // reveals the column to the right; reversed does the opposite.
@@ -700,7 +704,7 @@ fn step_swipe_gesture(
                     && config.swipe_vertical()
                     && config.swipe_gesture_fingers() == Some(*fingers) =>
             {
-                state.vertical += delta / *fingers as f64;
+                state.vertical += delta;
                 if state.vertical.abs() >= threshold {
                     switch_virtual_workspace(state.vertical, &config, &mut commands);
                     state.fired = true;

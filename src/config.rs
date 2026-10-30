@@ -2912,7 +2912,10 @@ mod lua_setup_tests {
 fn gesture_paging_defaults_and_overrides_are_resolved() {
     let defaults = Config::default();
     assert!(!defaults.swipe_gesture_paging());
-    assert_eq!(defaults.swipe_gesture_page_distance_cm(), 2.0);
+    assert_eq!(
+        defaults.swipe_gesture_page_distance_cm().to_bits(),
+        2.0_f64.to_bits()
+    );
     assert!(defaults.swipe_gesture_haptics());
 
     let enabled = Config::try_from(
@@ -2920,7 +2923,10 @@ fn gesture_paging_defaults_and_overrides_are_resolved() {
     )
     .unwrap();
     assert!(enabled.swipe_gesture_paging());
-    assert_eq!(enabled.swipe_gesture_page_distance_cm(), 3.5);
+    assert_eq!(
+        enabled.swipe_gesture_page_distance_cm().to_bits(),
+        3.5_f64.to_bits()
+    );
     assert!(!enabled.swipe_gesture_haptics());
 
     let disabled = Config::try_from("[swipe.gesture]\npaging = false\nhaptics = true\n").unwrap();

@@ -416,7 +416,12 @@ fn shares_a_tab_group(
 #[instrument(level = Level::DEBUG, skip_all, fields(focused))]
 pub(super) fn fix_window_size_on_focus(
     focused: Single<(Entity, Has<VerifyWindowSize>), Added<FocusedMarker>>,
-    mut windows: Query<(&mut Window, &mut Bounds, Has<ResizeMarker>, Has<super::window_geometry::RecentDisplayTransfer>)>,
+    mut windows: Query<(
+        &mut Window,
+        &mut Bounds,
+        Has<ResizeMarker>,
+        Has<super::window_geometry::RecentDisplayTransfer>,
+    )>,
     mut commands: Commands,
 ) {
     let (entity, verify_size) = *focused;

@@ -54,7 +54,7 @@ impl Plugin for MouseEventsPlugin {
                 horizontal_warp_mouse_trigger,
             )
                 .in_set(UpdateSet::Input)
-                .run_if(on_message::<InputEvent>).in_set(super::sleep::LayoutActivity),
+                .run_if(on_message::<InputEvent>),
         );
     }
 }

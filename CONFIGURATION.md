@@ -82,6 +82,8 @@ Configure trackpad gestures and scroll-wheel window sliding.
 
 When `fingers_count` is omitted or set below 3, Paneru does not intercept native macOS gestures. If macOS uses three-finger horizontal swipes for Spaces, prefer `[swipe.scroll]` with a modifier or configure a different finger count.
 
+`window_step` takes precedence when both `window_step` and `paging` are enabled.
+
 Paging estimates physical distance from the trackpad's reported device size. The centimeter threshold may feel slightly different across devices; adjust `page_distance_cm` to suit your trackpad. Haptics require compatible hardware and may be suppressed by macOS when fingers are no longer touching it.
 
 To move one window at a time with the existing focus animation:
