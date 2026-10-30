@@ -243,6 +243,12 @@ Available modifiers are:
 - `shift`, `lshift`, `rshift`
 - `fn`
 
+Remote keyboard events, including those from Screen Sharing, can identify a
+modifier without identifying its left or right side. Generic bindings such as
+`cmd - leftarrow` accept these events; side-specific bindings such as
+`lcmd - leftarrow` require an explicitly reported side. Physical keyboard events
+retain their reported side even when they also carry generic modifier flags.
+
 For a full list of parseable keys (i.e. `leftarrow`) check the source:
 https://github.com/karinushka/paneru/blob/3790b01f8d65df5d9000142db7cf25f9270dcccc/src/config.rs#L1466-L1601
 
