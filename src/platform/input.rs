@@ -117,6 +117,11 @@ pub(crate) enum TapHealth {
     Failed,
 }
 
+struct InputTap {
+    port: CFRetained<CFMachPort>,
+    source: CFRetained<CFRunLoopSource>,
+}
+
 /// `InputHandler` manages low-level input events from the macOS `CGEventTap`.
 /// It intercepts keyboard and mouse events, processes gestures, and dispatches them as higher-level `Event`s.
 pub(super) struct InputHandler {
@@ -126,11 +131,9 @@ pub(super) struct InputHandler {
     config: Config,
     /// The previous event's fingers, for swipe gesture detection.
     finger_position: Option<Vec<Touch>>,
-    /// The `CFMachPort` representing the `CGEventTap`.
-    tap_port: Option<CFRetained<CFMachPort>>,
-    /// Run loop source feeding `tap_port`. Retained so the tap can be torn down
-    /// and rebuilt when macOS invalidates the mach port across a sleep cycle.
-    run_loop_source: Option<CFRetained<CFRunLoopSource>>,
+    /// Pointer/gesture HID tap and keyboard session tap, retained so both can
+    /// be torn down and rebuilt when macOS invalidates a port across sleep.
+    taps: Vec<InputTap>,
     /// Timestamp of the last swipe gesture event. Scroll wheel events
     /// are suppressed for a short window after this to prevent the OS from
     /// scrolling windows underneath (including momentum scroll after finger lift).
@@ -159,8 +162,7 @@ impl InputHandler {
             events: Some(events),
             config,
             finger_position: None,
-            tap_port: None,
-            run_loop_source: None,
+            taps: Vec::new(),
             last_swipe_time: None,
             last_window_scroll: None,
             _pin: PhantomPinned,
@@ -201,16 +203,34 @@ impl InputHandler {
             | (1 << CGEventType::RightMouseUp.0)
             | (1 << CGEventType::RightMouseDragged.0)
             | (1 << CGEventType::ScrollWheel.0)
-            | (1 << NSEventType::Gesture.0)
-            | (1 << CGEventType::KeyDown.0);
+            | (1 << NSEventType::Gesture.0);
 
+        // Screen Sharing can inject keys downstream of the HID tap. Observe
+        // keyboard input once at the session tap, where both local and remote
+        // keys arrive; keep raw pointer/gesture delivery at its existing stage.
+        for (location, mask) in [
+            (CGEventTapLocation::HIDEventTap, mouse_event_mask),
+            (
+                CGEventTapLocation::SessionEventTap,
+                1 << CGEventType::KeyDown.0,
+            ),
+        ] {
+            if let Err(error) = self.install_tap_at(location, mask) {
+                self.uninstall_tap();
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn install_tap_at(&mut self, location: CGEventTapLocation, mask: u64) -> Result<()> {
         let this = NonNull::from(&mut *self).as_ptr();
         let port = unsafe {
             CGEvent::tap_create(
-                CGEventTapLocation::HIDEventTap,
+                location,
                 CGEventTapPlacement::HeadInsertEventTap,
                 CGEventTapOptions::Default,
-                mouse_event_mask,
+                mask,
                 Some(Self::callback),
                 this.cast(),
             )
@@ -231,24 +251,24 @@ impl InputHandler {
             kCFRunLoopCommonModes
         });
 
-        self.tap_port = Some(port);
-        self.run_loop_source = Some(run_loop_source);
+        self.taps.push(InputTap {
+            port,
+            source: run_loop_source,
+        });
         Ok(())
     }
 
     fn uninstall_tap(&mut self) {
-        if let Some(run_loop_source) = self.run_loop_source.take()
-            && let Some(main_loop) = CFRunLoop::main()
-        {
-            CFRunLoop::remove_source(&main_loop, Some(&run_loop_source), unsafe {
-                kCFRunLoopCommonModes
-            });
-        }
-        if let Some(port) = self.tap_port.take()
-            && port.is_valid()
-        {
-            CGEvent::tap_enable(&port, false);
-            CFMachPort::invalidate(&port);
+        for tap in self.taps.drain(..) {
+            if let Some(main_loop) = CFRunLoop::main() {
+                CFRunLoop::remove_source(&main_loop, Some(&tap.source), unsafe {
+                    kCFRunLoopCommonModes
+                });
+            }
+            if tap.port.is_valid() {
+                CGEvent::tap_enable(&tap.port, false);
+                CFMachPort::invalidate(&tap.port);
+            }
         }
     }
 
@@ -260,16 +280,28 @@ impl InputHandler {
     /// tap stays dead until the daemon restarts. Re-enabling an invalid port is
     /// a no-op, so that case needs a full rebuild.
     pub(super) fn ensure_tap_alive(&mut self) -> TapHealth {
-        let Some(port) = self.tap_port.clone().filter(|port| port.is_valid()) else {
+        if self.taps.is_empty() || self.taps.iter().any(|tap| !tap.port.is_valid()) {
             return self.rebuild_tap();
-        };
+        }
 
-        if CGEvent::tap_is_enabled(&port) {
+        if self
+            .taps
+            .iter()
+            .all(|tap| CGEvent::tap_is_enabled(&tap.port))
+        {
             return TapHealth::Healthy;
         }
 
-        CGEvent::tap_enable(&port, true);
-        if CGEvent::tap_is_enabled(&port) {
+        for tap in &self.taps {
+            if !CGEvent::tap_is_enabled(&tap.port) {
+                CGEvent::tap_enable(&tap.port, true);
+            }
+        }
+        if self
+            .taps
+            .iter()
+            .all(|tap| CGEvent::tap_is_enabled(&tap.port))
+        {
             warn!("event tap was disabled, re-enabled it");
             TapHealth::Reenabled
         } else {
@@ -342,8 +374,10 @@ impl InputHandler {
             CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
         ) {
             warn!("Tap Disabled, re-enabling");
-            if let Some(port) = &self.tap_port {
-                CGEvent::tap_enable(port, true);
+            for tap in &self.taps {
+                if tap.port.is_valid() {
+                    CGEvent::tap_enable(&tap.port, true);
+                }
             }
             return false;
         }
