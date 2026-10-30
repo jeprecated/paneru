@@ -410,7 +410,7 @@ impl InputHandler {
         }
 
         let flags = CGEvent::flags(Some(event));
-        let modifiers = get_scroll_modifiers(flags);
+        let modifiers = get_modifiers(flags);
 
         let target_modifier = self.config.swipe_scroll_modifier();
         let vertical_mod = self.config.swipe_scroll_vertical_modifier();
@@ -633,9 +633,9 @@ fn gesture_should_intercept(configured_fingers: Option<usize>, actual_fingers: u
     })
 }
 
-// Remote mouse tools can send group flags without left or right flags.
+// Screen Sharing and shared mouse tools can send group flags without side flags.
 // Use the group only when the event does not specify a side.
-fn get_scroll_modifiers(eventflags: CGEventFlags) -> Modifiers {
+fn get_modifiers(eventflags: CGEventFlags) -> Modifiers {
     const GROUP_FLAGS: [(Modifiers, u64); 4] = [
         (Modifiers::ALT, CGEventFlags::MaskAlternate.0),
         (Modifiers::SHIFT, CGEventFlags::MaskShift.0),
@@ -643,18 +643,19 @@ fn get_scroll_modifiers(eventflags: CGEventFlags) -> Modifiers {
         (Modifiers::CTRL, CGEventFlags::MaskControl.0),
     ];
 
-    GROUP_FLAGS
-        .iter()
-        .fold(get_modifiers(eventflags), |modifiers, (group, flag)| {
+    GROUP_FLAGS.iter().fold(
+        get_device_modifiers(eventflags),
+        |modifiers, (group, flag)| {
             if !modifiers.intersects(*group) && eventflags.0 & flag != 0 {
                 modifiers | *group
             } else {
                 modifiers
             }
-        })
+        },
+    )
 }
 
-fn get_modifiers(eventflags: CGEventFlags) -> Modifiers {
+fn get_device_modifiers(eventflags: CGEventFlags) -> Modifiers {
     const MODIFIER_MASKS: [(Modifiers, u64); 8] = [
         (Modifiers::LALT, 0x0000_0020),
         (Modifiers::RALT, 0x0000_0040),
@@ -926,15 +927,76 @@ mod tests {
     }
 
     #[test]
-    fn device_independent_flags_ignored() {
-        let generic_alt: u64 = 0x0008_0000;
-        assert_eq!(get_modifiers(CGEventFlags(generic_alt)), Modifiers::empty());
+    fn remote_keyboard_modifiers_match_generic_bindings_without_inventing_a_side() {
+        for (group, left, right, flag) in [
+            (
+                Modifiers::ALT,
+                Modifiers::LALT,
+                Modifiers::RALT,
+                0x0008_0000,
+            ),
+            (
+                Modifiers::SHIFT,
+                Modifiers::LSHIFT,
+                Modifiers::RSHIFT,
+                0x0002_0000,
+            ),
+            (
+                Modifiers::CMD,
+                Modifiers::LCMD,
+                Modifiers::RCMD,
+                0x0010_0000,
+            ),
+            (
+                Modifiers::CTRL,
+                Modifiers::LCTRL,
+                Modifiers::RCTRL,
+                0x0004_0000,
+            ),
+        ] {
+            let modifiers = get_modifiers(CGEventFlags(flag));
+            assert!(group.matches(modifiers));
+            assert!(!left.matches(modifiers));
+            assert!(!right.matches(modifiers));
+        }
+    }
+
+    #[test]
+    fn remote_keyboard_command_arrow_dispatches_and_rejects_extra_modifiers() {
+        let config = Config::try_from("[bindings]\nwindow_focus_west = 'cmd - leftarrow'\n")
+            .expect("valid keyboard config");
+        let (sender, receiver) = EventSender::new();
+        let handler = InputHandler::new(sender, config);
+
+        // Screen Sharing may report Command without a left/right device flag.
+        // NumericPad and SecondaryFn on arrow events are not extra modifiers.
+        assert!(handler.handle_keypress(123, CGEventFlags(0x00b0_0100)));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Event::Command {
+                command: Command::Window(crate::commands::Operation::Focus(Direction::West))
+            })
+        ));
+        assert!(!handler.handle_keypress(123, CGEventFlags(0x00b2_0100)));
+        assert!(receiver.try_recv().is_err());
+        assert!(!handler.handle_keypress(123, CGEventFlags(0x00a0_0100)));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn physical_keyboard_keeps_sides_with_remote_flags_in_other_groups() {
+        let modifiers = get_modifiers(CGEventFlags(
+            0x0010_0000 | NX_DEVICELCMDKEYMASK | 0x0002_0000,
+        ));
+        assert!((Modifiers::LCMD | Modifiers::SHIFT).matches(modifiers));
+        assert!(!(Modifiers::RCMD | Modifiers::SHIFT).matches(modifiers));
+        assert!(!(Modifiers::LCMD | Modifiers::LSHIFT).matches(modifiers));
     }
 
     #[test]
     fn shared_mouse_alt_scroll_matches_generic_binding() {
         // Deskflow uses the group flag for scroll events from Windows Alt.
-        let modifiers = get_scroll_modifiers(CGEventFlags(0x2008_0000));
+        let modifiers = get_modifiers(CGEventFlags(0x2008_0000));
         assert!(Modifiers::ALT.matches(modifiers));
         // The event does not identify a side. Do not select one.
         assert!(!Modifiers::LALT.matches(modifiers));
@@ -943,14 +1005,14 @@ mod tests {
 
     #[test]
     fn shared_mouse_extra_modifier_does_not_trigger_alt_scroll() {
-        let modifiers = get_scroll_modifiers(CGEventFlags(0x200c_0000));
+        let modifiers = get_modifiers(CGEventFlags(0x200c_0000));
         assert!(!Modifiers::ALT.matches(modifiers));
         assert!((Modifiers::ALT | Modifiers::CTRL).matches(modifiers));
     }
 
     #[test]
     fn physical_scroll_keeps_the_reported_modifier_side() {
-        let modifiers = get_scroll_modifiers(CGEventFlags(0x0008_0000 | NX_DEVICERALTKEYMASK));
+        let modifiers = get_modifiers(CGEventFlags(0x0008_0000 | NX_DEVICERALTKEYMASK));
         assert!(Modifiers::ALT.matches(modifiers));
         assert!(Modifiers::RALT.matches(modifiers));
         assert!(!Modifiers::LALT.matches(modifiers));
@@ -958,7 +1020,7 @@ mod tests {
 
     #[test]
     fn ordinary_scroll_does_not_trigger_alt_scroll() {
-        assert!(!Modifiers::ALT.matches(get_scroll_modifiers(CGEventFlags(0x2000_0000))));
+        assert!(!Modifiers::ALT.matches(get_modifiers(CGEventFlags(0x2000_0000))));
     }
 
     #[test]
@@ -968,7 +1030,7 @@ mod tests {
             (Modifiers::CTRL, 0x0004_0000),
             (Modifiers::CMD, 0x0010_0000),
         ] {
-            assert!(group.matches(get_scroll_modifiers(CGEventFlags(flag))));
+            assert!(group.matches(get_modifiers(CGEventFlags(flag))));
         }
     }
 
