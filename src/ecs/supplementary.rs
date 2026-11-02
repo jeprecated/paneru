@@ -10,7 +10,7 @@ use crate::{
     },
     events::Event,
     manager::{Display, Size, Window, WindowManager},
-    types::commands::Command,
+    types::commands::{Command, MoveFocus, Operation},
 };
 
 #[derive(Component)]
@@ -250,6 +250,7 @@ fn reconcile(
 fn send_window(
     mut messages: MessageReader<Event>,
     displays: Query<(Entity, &Display), With<SupplementaryDisplay>>,
+    all_displays: Query<&Display>,
     mut params: ParamSet<(
         ActiveDisplay,
         Query<(
@@ -265,16 +266,19 @@ fn send_window(
     time: Res<Time>,
     mut commands: Commands,
 ) {
-    if !messages.read().any(|event| {
-        matches!(
-            event,
-            Event::Command {
-                command: Command::DisplaySupplementary
-            }
-        )
-    }) {
+    // `window nextdisplay` arrives here only when the supplementary display is
+    // next in screen order; `display supplementary` always targets it.
+    let Some(next_display) = messages.read().find_map(|event| match event {
+        Event::Command {
+            command: Command::DisplaySupplementary,
+        } => Some(None),
+        Event::Command {
+            command: Command::Window(Operation::ToNextDisplay(move_focus)),
+        } => Some(Some(*move_focus)),
+        _ => None,
+    }) else {
         return;
-    }
+    };
     let Some((display_entity, display)) = displays.iter().next() else {
         return;
     };
@@ -287,6 +291,12 @@ fn send_window(
     let (source, neighbor, source_width) = {
         let active = params.p0();
         if active.entity() == display_entity || !active.active_strip().contains(entity) {
+            return;
+        }
+        if next_display.is_some()
+            && crate::commands::next_display_id(active.id(), all_displays.iter().map(Display::id))
+                != Some(display.id())
+        {
             return;
         }
         (
@@ -349,7 +359,11 @@ fn send_window(
     }
     super::workspace::spawn_snap_strip_guard(source, &mut commands);
     super::workspace::spawn_snap_strip_guard(target, &mut commands);
-    let focus = occupant.or(neighbor).unwrap_or(entity);
+    let focus = if next_display == Some(MoveFocus::Follow) {
+        entity
+    } else {
+        occupant.or(neighbor).unwrap_or(entity)
+    };
     // Focus only after committing both physical frames. Raising the occupant
     // while it still lived on the laptop let macOS activate the old screen.
     commands.entity(focus).insert(FocusAfterTransfer);

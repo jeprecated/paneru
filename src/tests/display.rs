@@ -1640,3 +1640,131 @@ fn test_directional_screen_focus_preserves_each_strip_offset() {
     crate::assert_focused!(harness.world(), 2);
     assert_eq!(offsets(harness.world()), before);
 }
+
+#[test]
+fn test_next_display_moves_windows_in_screen_cycle_order() {
+    // Each screen sends to the one `display next` focuses, wrapping from the
+    // third to the first. A fixed "first other display" cannot form this cycle.
+    for (presses, window, workspace) in [
+        (0, 2, EXT_WORKSPACE_ID),
+        (1, 100, EXT_WORKSPACE_ID + 1),
+        (2, 200, TEST_WORKSPACE_ID),
+    ] {
+        let mut harness = TestHarness::new()
+            .with_windows(3)
+            .with_display(
+                EXT_DISPLAY_ID,
+                IRect::new(-1920, 0, 0, 1200),
+                vec![EXT_WORKSPACE_ID],
+            )
+            .with_display(
+                EXT_DISPLAY_ID + 1,
+                IRect::new(0, -1200, 1920, 0),
+                vec![EXT_WORKSPACE_ID + 1],
+            )
+            .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+                window.frame = IRect::new(-1600, 20, -1200, 1000);
+            })
+            .with_workspace_window(200, EXT_WORKSPACE_ID + 1, |window| {
+                window.frame = IRect::new(0, -1100, 400, -100);
+            });
+        harness.advance(Duration::from_secs(1));
+        harness.world().write_message(Event::Command {
+            command: Command::Window(Operation::Focus(Direction::Last)),
+        });
+        harness.advance(Duration::from_secs(1));
+        for _ in 0..presses {
+            harness.world().write_message(Event::Command {
+                command: Command::DisplayNext,
+            });
+            harness.advance(Duration::from_secs(1));
+        }
+        crate::assert_focused!(harness.world(), window);
+        harness.world().write_message(Event::Command {
+            command: Command::Window(Operation::ToNextDisplay(MoveFocus::Follow)),
+        });
+        harness.advance(Duration::from_secs(1));
+        assert_on_workspace!(harness.world(), window, workspace);
+    }
+}
+
+#[test]
+fn test_next_display_swaps_through_supplementary_and_back() {
+    let config: Config = (
+        MainOptions {
+            supplementary_display: Some(EXT_DISPLAY_ID),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+    let mut harness = TestHarness::new()
+        .with_config(config)
+        .with_windows(3)
+        .with_display(
+            EXT_DISPLAY_ID,
+            IRect::new(-800, 0, 0, 600),
+            vec![EXT_WORKSPACE_ID],
+        )
+        .with_workspace_window(100, EXT_WORKSPACE_ID, |window| {
+            window.frame = IRect::new(-750, 20, -350, 600);
+        });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::Focus(Direction::Nth(1))),
+    });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    let sender = find_window_entity(1, world);
+    let old = find_window_entity(100, world);
+    let width = world.get::<crate::ecs::Bounds>(sender).unwrap().0.x;
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::ToNextDisplay(MoveFocus::Follow)),
+    });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    // The laptop occupant takes the sender's slot; focus follows the sender.
+    assert_on_workspace!(world, 1, EXT_WORKSPACE_ID);
+    assert_on_workspace!(world, 100, TEST_WORKSPACE_ID);
+    crate::assert_focused!(world, 1);
+    let main = world
+        .query::<&LayoutStrip>()
+        .iter(world)
+        .find(|strip| strip.id() == TEST_WORKSPACE_ID)
+        .unwrap()
+        .all_windows();
+    assert_eq!(
+        main,
+        vec![
+            find_window_entity(0, world),
+            old,
+            find_window_entity(2, world)
+        ]
+    );
+
+    harness
+        .mock_state
+        .update_window(1, |window| window.workspace_id = EXT_WORKSPACE_ID);
+    harness
+        .mock_state
+        .update_window(100, |window| window.workspace_id = TEST_WORKSPACE_ID);
+    harness.mock_state.set_focused_window(1);
+    harness
+        .world()
+        .write_message(Event::WindowFocused { window_id: 1 });
+    harness.advance(Duration::from_secs(1));
+    harness.world().write_message(Event::Command {
+        command: Command::Window(Operation::ToNextDisplay(MoveFocus::Follow)),
+    });
+    harness.advance(Duration::from_secs(1));
+    let world = harness.world();
+    // Leaving the laptop restores the sender's scrolling width.
+    assert_on_workspace!(world, 1, TEST_WORKSPACE_ID);
+    assert_not_on_workspace!(world, 1, EXT_WORKSPACE_ID);
+    assert!(
+        world
+            .get::<crate::ecs::supplementary::SupplementaryWindow>(sender)
+            .is_none()
+    );
+    assert_eq!(world.get::<crate::ecs::Bounds>(sender).unwrap().0.x, width);
+}

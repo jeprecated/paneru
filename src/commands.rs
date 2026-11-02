@@ -8,6 +8,7 @@ use bevy::ecs::query::{Has, With, Without};
 use bevy::ecs::schedule::IntoScheduleConfigs as _;
 use bevy::ecs::system::{Commands, Query, Res, Single};
 use bevy::math::IRect;
+use objc2_core_graphics::CGDirectDisplayID;
 use tracing::{Level, instrument};
 use tracing::{debug, error, info};
 
@@ -21,6 +22,7 @@ use crate::ecs::layout::{
     Column, LayoutStrip, MIN_WINDOW_HEIGHT, StackItem, clamp_origin_to_viewport, strip_signature,
 };
 use crate::ecs::params::{ActiveDisplay, ActiveDisplayMut, Windows};
+use crate::ecs::supplementary::{SupplementaryDisplay, SupplementaryWindow};
 use crate::ecs::{
     ActiveDisplayMarker, ActiveWorkspaceMarker, Bounds, DockPosition, FocusedMarker,
     FullWidthMarker, ManualStripOffset, NativeFullscreenMarker, RaiseWindow, SelectedVirtualMarker,
@@ -159,10 +161,13 @@ fn focus_display(
             .min_by_key(|(entity, _, distance)| (*distance, entity.to_bits()))
             .map(|(entity, display, _)| (entity, display))
     } else {
+        let next = next_display_id(
+            active.id(),
+            displays.iter().map(|(_, display)| display.id()),
+        );
         displays
             .iter()
-            .filter(|(_, display)| display.id() != active.id())
-            .min_by_key(|(_, display)| (display.id() <= active.id(), display.id()))
+            .find(|(_, display)| Some(display.id()) == next)
     };
     let Some((display_entity, display)) = target else {
         return;
@@ -194,6 +199,19 @@ fn focus_display(
     } else {
         wm.warp_mouse(display.bounds().center());
     }
+}
+
+/// The display after `active` in native display id order, wrapping around.
+/// Screen focus and window moves share this order, so a window sent "next"
+/// lands on the screen `display next` would focus.
+pub(crate) fn next_display_id(
+    active: CGDirectDisplayID,
+    displays: impl IntoIterator<Item = CGDirectDisplayID>,
+) -> Option<CGDirectDisplayID> {
+    displays
+        .into_iter()
+        .filter(|id| *id != active)
+        .min_by_key(|id| (*id <= active, *id))
 }
 
 pub fn filter_window_operations<'a, F: Fn(&Operation) -> bool>(
@@ -1201,11 +1219,14 @@ fn copy_window_rule(
 /// * `windows` - A mutable query for `Window` components, their `Entity`, and whether they have the `Unmanaged` marker.
 /// * `active_display` - A mutable reference to the `ActiveDisplayMut` resource.
 /// * `commands` - Bevy commands to modify entities and trigger events.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn to_next_display(
     mut messages: MessageReader<Event>,
     windows: Windows,
     mut active_display: ActiveDisplayMut,
     mut other_workspaces: OffscreenStrips,
+    supplementary: Query<(), With<SupplementaryDisplay>>,
+    saved: Query<&SupplementaryWindow>,
     window_manager: Res<WindowManager>,
     config: Res<Config>,
     mut commands: Commands,
@@ -1236,10 +1257,27 @@ fn to_next_display(
     // for on both the source and target displays.
     let source_viewport_width = active_display.actual_bounds(&config).width();
 
-    let Some(other) = active_display.other().next() else {
+    let active_id = active_display.display().id();
+    let next = next_display_id(
+        active_id,
+        active_display.other().map(|display| display.id()),
+    );
+    let Some(other) = active_display
+        .other()
+        .find(|display| Some(display.id()) == next)
+    else {
         debug!("no other display to move window to.");
         return;
     };
+    // The supplementary display holds a single window; `supplementary::send_window`
+    // swaps its occupant into the source slot instead.
+    if let Ok(space) = window_manager.active_display_space(other.id())
+        && other_workspaces
+            .iter()
+            .any(|(strip, child)| strip.id() == space && supplementary.contains(child.parent()))
+    {
+        return;
+    }
 
     debug!(
         "moving window (id {}, {entity}) to display {}: {}.",
@@ -1253,8 +1291,15 @@ fn to_next_display(
     let Some(size) = windows.size(entity) else {
         return;
     };
-    let width_ratio =
-        (source_viewport_width > 0).then(|| f64::from(size.x) / f64::from(source_viewport_width));
+    // A window leaving the supplementary display regains its scrolling width.
+    let width_ratio = saved
+        .get(entity)
+        .map(|saved| saved.width_ratio)
+        .ok()
+        .or_else(|| {
+            (source_viewport_width > 0)
+                .then(|| f64::from(size.x) / f64::from(source_viewport_width))
+        });
     let dest = other.bounds().min.with_x(center - size.x / 2);
     commands.reposition_entity(entity, dest);
 

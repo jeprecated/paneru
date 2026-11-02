@@ -237,8 +237,8 @@ https://github.com/karinushka/paneru/blob/3790b01f8d65df5d9000142db7cf25f9270dcc
 | `window_tabbeddisplay` | Toggle the focused stack between a normal split display and a tabbed display (one window visible at a time, sharing the full column). Cycle tabs with `window_focus_north`/`window_focus_south`. |
 | `window_equalize` | Make all windows in a stack equal height. |
 | `window_balance` | Make all columns in the strip the same width as the focused window. |
-| `window_nextdisplay` | Move focused window to the next monitor and follow it. |
-| `window_nextdisplaysend` | Move focused window to the next monitor but stay on current. |
+| `window_nextdisplay` | Move focused window to the next monitor (the one `display_next` focuses) and follow it. Onto the supplementary display it swaps the occupant into the source slot. |
+| `window_nextdisplaysend` | Like `window_nextdisplay`, but focus stays on the current monitor. |
 | `mouse_nextdisplay` | Warp mouse cursor to the next monitor. |
 | `window_snap` | Snap an overflowing window into the viewport. |
 | `window_raise_floating` | Make the floating windows layer visible on the current workspace. |
